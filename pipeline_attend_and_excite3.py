@@ -188,6 +188,37 @@ class AttendAndExcitePipeline(StableDiffusionPipeline):
 
         return text_inputs, prompt_embeds
 
+    def parse_prompt(prompt: str) -> List[int]: #noa added - it is temp
+        # Mapping words to numbers
+        word_to_num = {
+            "one": 1,
+            "two": 2,
+            "three": 3,
+            "four": 4,
+            "five": 5,
+            "six": 6,
+            "seven": 7,
+            "eight": 8,
+            "nine": 9,
+            "ten": 10,
+            # add more mappings as needed
+        }
+        
+        tokens = prompt.lower().split()
+        desired_counts = []
+        
+        i = 0
+        while i < len(tokens):
+            if tokens[i] in word_to_num:
+                num = word_to_num[tokens[i]]
+                if i + 1 < len(tokens) and tokens[i + 1].isalpha():
+                    desired_counts.append(num)
+                i += 2  # Move to the next object after the number and object
+            else:
+                i += 1  # Move to the next token if no number found
+        
+        return desired_counts
+        
     @staticmethod
     def _compute_loss(desired_count:List[int] , num_obj_per_index: List[torch.Tensor], return_losses: bool = False) -> torch.Tensor:
         """ Computes the lookahead loss using the difference in number of objects value for each token. """
@@ -198,6 +229,19 @@ class AttendAndExcitePipeline(StableDiffusionPipeline):
         else:
             return loss
 
+    def _compute_loss(desired_counts: List[int], num_obj_per_index: List[torch.Tensor], return_losses: bool = False) -> torch.Tensor: #noa added
+    """ Computes the loss by comparing the desired object counts with the detected object counts per token. """
+    # Calculate the loss for each token
+    losses = [(desired_count - num_obj.item()) ** 2 for desired_count, num_obj in zip(desired_counts, num_obj_per_index)]
+    
+    # Sum the losses to get the total loss
+    loss = mean(losses)
+    
+    if return_losses:
+        return loss, losses
+    else:
+        return loss
+
     @staticmethod
     def _update_latent(latents: torch.Tensor, loss: torch.Tensor, step_size: float) -> torch.Tensor:
         """ Update the latent according to the computed loss. """
@@ -205,6 +249,28 @@ class AttendAndExcitePipeline(StableDiffusionPipeline):
         latents = latents - step_size * grad_cond
         return latents
 
+    def _apply_lcm_detection(self, latents: torch.Tensor, prompt: Union[str, List[str]], detection_model): #new---------------------------NOA
+        """
+        Apply LCM-based detection to address misalignment in generated images.
+        
+        Args:
+            latents (`torch.Tensor`): The latent representation of the image.
+            prompt (`str` or `List[str]`): The prompt or prompts used for image generation.
+            detection_model: The detection model to be used for detecting objects.
+        
+        Returns:
+            Adjusted latents to address misalignment.
+        """
+        # Run detection model to identify misalignments in generated images
+        detection_results = detection_model(latents)
+
+        # Logic to adjust latents based on misalignment detection
+        for detection in detection_results:
+            # Apply correction to latents based on detection
+            latents = self._correct_latent_misalignment(latents, detection)
+
+        return latents
+        
     @torch.no_grad()
     def __call__(
             self,
@@ -329,6 +395,8 @@ class AttendAndExcitePipeline(StableDiffusionPipeline):
         # corresponds to doing no classifier free guidance.
         do_classifier_free_guidance = guidance_scale > 1.0
 
+        desired_counts = parse_prompt(prompt) #noa added - get list of counts
+        
         # 3. Encode input prompt
         text_inputs, prompt_embeds = self._encode_prompt(
             prompt,
