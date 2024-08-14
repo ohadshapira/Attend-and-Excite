@@ -7,7 +7,8 @@ from IPython.display import display
 from PIL import Image
 from typing import Union, Tuple, List
 
-from diffusers.models.cross_attention import CrossAttention
+#from diffusers.models.cross_attention import CrossAttention #noa replaced with row below 14.8.24
+from diffusers.models.attention import Attention as CrossAttention #noa added 14.8.24
 
 def text_under_image(image: np.ndarray, text: str, text_color: Tuple[int, int, int] = (0, 0, 0)) -> np.ndarray:
     h, w, c = image.shape
@@ -63,7 +64,7 @@ class AttendExciteCrossAttnProcessor:
 
     def __call__(self, attn: CrossAttention, hidden_states, encoder_hidden_states=None, attention_mask=None):
         batch_size, sequence_length, _ = hidden_states.shape
-        attention_mask = attn.prepare_attention_mask(attention_mask, sequence_length)
+        attention_mask = attn.prepare_attention_mask(attention_mask, sequence_length, batch_size) #noa added batch size as input 14.8.24
 
         query = attn.to_q(hidden_states)
 

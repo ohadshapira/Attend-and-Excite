@@ -12,12 +12,20 @@ from transformers import CLIPFeatureExtractor, CLIPTextModel, CLIPTokenizer
 from diffusers.configuration_utils import FrozenDict
 from diffusers.models import AutoencoderKL, UNet2DConditionModel
 from diffusers.schedulers import KarrasDiffusionSchedulers
-from diffusers.utils import deprecate, is_accelerate_available, logging, randn_tensor, replace_example_docstring
+#from diffusers.utils import deprecate, is_accelerate_available, logging, randn_tensor, replace_example_docstring
+from diffusers.utils import deprecate, is_accelerate_available, logging, replace_example_docstring
+from diffusers.utils.torch_utils import randn_tensor #noa added 14.8.24
+
 from diffusers.pipelines.pipeline_utils import DiffusionPipeline
 from diffusers.pipelines.stable_diffusion import StableDiffusionPipelineOutput
 from diffusers.pipelines.stable_diffusion.safety_checker import StableDiffusionSafetyChecker
 
 from diffusers.pipelines.stable_diffusion import StableDiffusionPipeline
+
+from diffusers import LCMScheduler, AutoPipelineForText2Image #noa added 14.08.24
+import matplotlib.pyplot as plt #noa added 14.08.24
+#from transformers import AutoTokenizer #noa added 14.08.24
+#from diffusers import PNDMScheduler #noa added 14.08.24
 
 from utils.gaussian_smoothing import GaussianSmoothing
 from utils.ptp_utils import AttentionStore, aggregate_attention
@@ -502,6 +510,20 @@ class AttendAndExcitePipeline(StableDiffusionPipeline):
         if max_iter_to_alter is None:
             max_iter_to_alter = len(self.scheduler.timesteps) + 1
 
+        #--------------------------noa added 14.8.24 - LCM model - start
+        # Load the model
+        model_lcm_id = "Lykon/dreamshaper-7"
+        adapter_lcm_id = "latent-consistency/lcm-lora-sdv1-5"
+
+        pipe_lcm = AutoPipelineForText2Image.from_pretrained(model_lcm_id, torch_dtype=torch.float16, variant="fp16")
+        pipe_lcm.scheduler = LCMScheduler.from_config(pipe_lcm.scheduler.config)
+        pipe_lcm.to("cuda") # Use GPU for faster generation
+
+        # load and fuse lcm lora
+        pipe_lcm.load_lora_weights(adapter_lcm_id)
+        pipe_lcm.fuse_lora()
+        #-------------------------noa added 14.8.24 - end
+
         # 7. Denoising loop
         num_warmup_steps = len(timesteps) - num_inference_steps * self.scheduler.order
         with self.progress_bar(total=num_inference_steps) as progress_bar:
@@ -515,6 +537,19 @@ class AttendAndExcitePipeline(StableDiffusionPipeline):
                     noise_pred_text = self.unet(latents, t,
                                                 encoder_hidden_states=prompt_embeds[1].unsqueeze(0), cross_attention_kwargs=cross_attention_kwargs).sample
                     self.unet.zero_grad()
+
+                    #---------------------------------------------------------------------------------------------noa added 14.8.24 - for LCM model - start
+                    # Generate the image using the pipeline and latent variables
+                    image_lcm = pipe_lcm(
+                        prompt=prompt,
+                        num_inference_steps=4,
+                        generator=generator,
+                        guidance_scale=8.0,
+                        latent_vars=latents  # Pass the latent variables here
+                    ).images[0]
+                    # save the generated image
+                    image_lcm.save(f'./outputs/lcm_denoise_step_{i}.png')
+                    #----------------------------------------------------------------------------------------------noa added 14.8.24 - for LCM model - end
 
                     # Get max activation value for each subject token
                     max_attention_per_index = self._aggregate_and_get_max_attention_per_token(
