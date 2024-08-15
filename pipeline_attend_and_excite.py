@@ -290,6 +290,17 @@ class AttendAndExcitePipeline(StableDiffusionPipeline):
         return dict(counts)
     #--------------------------Ohad added 15.8.24 - prompt to dict - end
 
+    #-------------------------Noa added 15.8.24 - detector to dict - start
+    # Get the detected object counts from YOLO results
+    def object_dict_from_dtector(self,sentence):
+        """converts the output of the detector to dictionary of objects and number of objects"""
+        detected_counts = {}
+        for *box, conf, cls in sentence.xyxy[0]:
+            cls_name = sentence.names[int(cls)]
+            detected_counts[cls_name] = detected_counts.get(cls_name, 0) + 1
+
+        return detected_counts
+
     @staticmethod
     def _compute_loss(max_attention_per_index: List[torch.Tensor], return_losses: bool = False) -> torch.Tensor: #we should **NOT** keep it (original)- noa 15.8.24
         """ Computes the attend-and-excite loss using the maximum attention value for each token. """
@@ -661,6 +672,9 @@ class AttendAndExcitePipeline(StableDiffusionPipeline):
                     results_yolo = model_yolo(image_lcm_np)#noa added 15.8.24
                     print(f'results_yolo in iter {i} are: {results_yolo}')#noa added 15.8.24
 
+                    #prompt_num_object = count_objects_by_indices(self,prompt, indices_to_alter)
+                    #detector_num_object = object_dict_from_dtector(self,results_yolo)
+                    
                     #loss_lcm = self._compute_loss_make_it_count_project(prompt_num_object=prompt_num_object, detector_num_object=detector_num_object) - noa added 15.8.24 (use Ohad's functions output)
                     #print(f'loss_lcm in iter {i} are: {loss_lcm}')#noa added 15.8.24                                                                                                                                                  
                     #----------------------------------------------------------------------------------------------noa added 14.8.24 - for LCM model - end
