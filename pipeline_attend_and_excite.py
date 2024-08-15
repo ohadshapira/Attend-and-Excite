@@ -59,7 +59,7 @@ class AttendAndExcitePipeline(StableDiffusionPipeline):
     """
     _optional_components = ["safety_checker", "feature_extractor"]
 
-    def _encode_prompt(
+    def _encode_prompt( #we should keep it (original)- noa 15.8.24
         self,
         prompt,
         device,
@@ -196,7 +196,7 @@ class AttendAndExcitePipeline(StableDiffusionPipeline):
 
         return text_inputs, prompt_embeds
 
-    def _compute_max_attention_per_index(self,
+    def _compute_max_attention_per_index(self, #we should **NOT** keep it (original)- noa 15.8.24
                                          attention_maps: torch.Tensor,
                                          indices_to_alter: List[int],
                                          smooth_attentions: bool = False,
@@ -228,7 +228,7 @@ class AttendAndExcitePipeline(StableDiffusionPipeline):
             max_indices_list.append(image.max())
         return max_indices_list
 
-    def _aggregate_and_get_max_attention_per_token(self, attention_store: AttentionStore,
+    def _aggregate_and_get_max_attention_per_token(self, attention_store: AttentionStore, #we should **NOT** keep it (original)- noa 15.8.24
                                                    indices_to_alter: List[int],
                                                    attention_res: int = 16,
                                                    smooth_attentions: bool = False,
@@ -252,7 +252,7 @@ class AttendAndExcitePipeline(StableDiffusionPipeline):
         return max_attention_per_index
 
     @staticmethod
-    def _compute_loss(max_attention_per_index: List[torch.Tensor], return_losses: bool = False) -> torch.Tensor:
+    def _compute_loss(max_attention_per_index: List[torch.Tensor], return_losses: bool = False) -> torch.Tensor: #we should **NOT** keep it (original)- noa 15.8.24
         """ Computes the attend-and-excite loss using the maximum attention value for each token. """
         losses = [max(0, 1. - curr_max) for curr_max in max_attention_per_index]
         loss = max(losses)
@@ -261,14 +261,74 @@ class AttendAndExcitePipeline(StableDiffusionPipeline):
         else:
             return loss
 
+    #noa added 15.8.24 -------------------------------------------------------------------------------------------------------------------------------------------------------START            
+    def _compute_loss_make_it_count_project(prompt_num_object: Dict[str, int], detector_num_object: Dict[str, int], return_losses: bool = False) -> torch.Tensor:
+        """ Computes the make-it-count-project loss using the maximum L2 distance for each token.  """
+        losses = []
+        
+        # Combine keys from both dictionaries to ensure all objects are considered.
+        all_objects = set(prompt_num_object.keys()).union(set(detector_num_object.keys()))
+        
+        for obj in all_objects:
+            count_prompt = prompt_num_object.get(obj, 0)
+            count_detector = detector_num_object.get(obj, 0)
+            l2_distance = (count_prompt - count_detector) ** 2
+            losses.append(torch.tensor(l2_distance, dtype=torch.float32))
+        
+        loss = max(losses)       
+        if return_losses:
+            return loss, losses
+        else:
+            return loss
+        
+    def _perform_iterative_refinement_step_make_it_coun_project(self, #we should keep it while making changes or create simialer function (original)- noa 15.8.24
+                                           latents: torch.Tensor,
+                                           loss: torch.Tensor,
+                                           prompt_num_object: Dict[str, int], #noa added 15.8.24
+                                           detector_num_object: Dict[str, int], #noa added 15.8.24
+                                           text_embeddings: torch.Tensor,
+                                           step_size: float,
+                                           t: int
+                                           ):
+        """
+        Performs the iterative latent refinement introduced in the project. Here, we continuously update the latent
+        code according to our loss objective in each denoising step. 
+        """
+        latents = latents.clone().detach().requires_grad_(True)
+        noise_pred_text = self.unet(latents, t, encoder_hidden_states=text_embeddings[1].unsqueeze(0)).sample
+        self.unet.zero_grad()
+
+        # compute loss
+        loss, losses = self._compute_loss_make_it_count_project(prompt_num_object=prompt_num_object, detector_num_object=detector_num_object, return_losses=True)
+
+        if loss != 0:
+            latents = self._update_latent(latents, loss, step_size)
+
+        with torch.no_grad():
+            noise_pred_uncond = self.unet(latents, t, encoder_hidden_states=text_embeddings[0].unsqueeze(0)).sample
+            noise_pred_text = self.unet(latents, t, encoder_hidden_states=text_embeddings[1].unsqueeze(0)).sample
+
+        try: #remove? noa 15.8.24
+            low_token = np.argmax([l.item() if type(l) != int else l for l in losses])
+        except Exception as e:
+            print(e)  # catch edge case :)
+            low_token = np.argmax(losses)
+
+        #low_word = self.tokenizer.decode(text_input.input_ids[0][indices_to_alter[low_token]])
+
+        print(f"\t Finished with loss of: {loss}")
+        return loss, latents
+    
+    #noa added 15.8.24 -------------------------------------------------------------------------------------------------------------------------------------------------------END
+
     @staticmethod
-    def _update_latent(latents: torch.Tensor, loss: torch.Tensor, step_size: float) -> torch.Tensor:
+    def _update_latent(latents: torch.Tensor, loss: torch.Tensor, step_size: float) -> torch.Tensor: #we should keep it (original)- noa 15.8.24
         """ Update the latent according to the computed loss. """
         grad_cond = torch.autograd.grad(loss.requires_grad_(True), [latents], retain_graph=True)[0]
         latents = latents - step_size * grad_cond
         return latents
 
-    def _perform_iterative_refinement_step(self,
+    def _perform_iterative_refinement_step(self, #we should keep it while making changes or create simialer function (original)- noa 15.8.24
                                            latents: torch.Tensor,
                                            indices_to_alter: List[int],
                                            loss: torch.Tensor,
@@ -374,7 +434,7 @@ class AttendAndExcitePipeline(StableDiffusionPipeline):
             callback_steps: Optional[int] = 1,
             cross_attention_kwargs: Optional[Dict[str, Any]] = None,
             max_iter_to_alter: Optional[int] = 25,
-            run_standard_sd: bool = False,
+            run_standard_sd: bool = False, #I do not think we need it - Noa 15.8.24 (it is if we want to run the stable diffusion without attend-and-excite changes)
             thresholds: Optional[dict] = {0: 0.05, 10: 0.5, 20: 0.8},
             scale_factor: int = 20,
             scale_range: Tuple[float, float] = (1., 0.5),
@@ -510,8 +570,8 @@ class AttendAndExcitePipeline(StableDiffusionPipeline):
         if max_iter_to_alter is None:
             max_iter_to_alter = len(self.scheduler.timesteps) + 1
 
-        #--------------------------noa added 14.8.24 - LCM model - start
-        # Load the model
+        #--------------------------noa added 14-15.8.24 - LCM model - start
+        # Load the LCM model
         model_lcm_id = "Lykon/dreamshaper-7"
         adapter_lcm_id = "latent-consistency/lcm-lora-sdv1-5"
 
@@ -526,7 +586,7 @@ class AttendAndExcitePipeline(StableDiffusionPipeline):
         # Load YOLO model (using a pre-trained model, e.g., YOLOv5)
         model_yolo = torch.hub.load('ultralytics/yolov5', 'yolov5s') #noa added 15.8.24
 
-        #-------------------------noa added 14.8.24 - end
+        #-------------------------noa added 14-15.8.24 - end
 
         # 7. Denoising loop
         num_warmup_steps = len(timesteps) - num_inference_steps * self.scheduler.order
@@ -543,12 +603,14 @@ class AttendAndExcitePipeline(StableDiffusionPipeline):
                     self.unet.zero_grad()
 
                     #---------------------------------------------------------------------------------------------noa added 14.8.24 - for LCM model - start
+                
                     # Generate the image using the pipeline and latent variables
                     image_lcm = pipe_lcm(
                         prompt=prompt,
-                        num_inference_steps=10,
+                        #prompt_embeds=prompt_embeds,
+                        num_inference_steps=8,
                         generator=generator,
-                        guidance_scale=8.0,
+                        guidance_scale=2.0,
                         latent_vars=latents  # Pass the latent variables here
                     ).images[0]
                     # save the generated image
@@ -559,10 +621,13 @@ class AttendAndExcitePipeline(StableDiffusionPipeline):
                     # Perform object detection on the generated image
                     results_yolo = model_yolo(image_lcm_np)#noa added 15.8.24
                     print(f'results_yolo in iter {i} are: {results_yolo}')#noa added 15.8.24
+
+                    #loss_lcm = self._compute_loss_make_it_count_project(prompt_num_object=prompt_num_object, detector_num_object=detector_num_object) - noa added 15.8.24 (use Ohad's functions output)
+                    #print(f'loss_lcm in iter {i} are: {loss_lcm}')#noa added 15.8.24                                                                                                                                                  
                     #----------------------------------------------------------------------------------------------noa added 14.8.24 - for LCM model - end
 
                     # Get max activation value for each subject token
-                    max_attention_per_index = self._aggregate_and_get_max_attention_per_token(
+                    max_attention_per_index = self._aggregate_and_get_max_attention_per_token( #remove - we do not need in our project - noa - 15.8.24
                         attention_store=attention_store,
                         indices_to_alter=indices_to_alter,
                         attention_res=attention_res,
@@ -571,9 +636,10 @@ class AttendAndExcitePipeline(StableDiffusionPipeline):
                         kernel_size=kernel_size,
                         normalize_eot=sd_2_1)
 
-                    if not run_standard_sd:
+                    if not run_standard_sd: #I do not think we need that *if* - Noa 15.8.24 (it is if we want to run the stable diffusion without attend-and-excite changes)
 
                         loss = self._compute_loss(max_attention_per_index=max_attention_per_index)
+                        #loss = self._compute_loss_make_it_count_project(prompt_num_object=prompt_num_object, detector_num_object=detector_num_object) - noa added 15.8.24 (use Ohad's functions output)
 
                         # If this is an iterative refinement step, verify we have reached the desired threshold for all
                         if i in thresholds.keys() and loss > 1. - thresholds[i]:
@@ -595,9 +661,10 @@ class AttendAndExcitePipeline(StableDiffusionPipeline):
                                 kernel_size=kernel_size,
                                 normalize_eot=sd_2_1)
 
-                        # Perform gradient update
+                        # Perform gradient update - #we should keep it (original)- noa 15.8.24 (think about the if statment)
                         if i < max_iter_to_alter:
                             loss = self._compute_loss(max_attention_per_index=max_attention_per_index)
+                            #loss = self._compute_loss_make_it_count_project(prompt_num_object=prompt_num_object, detector_num_object=detector_num_object) - noa added 15.8.24 (use Ohad's functions output)
                             if loss != 0:
                                 latents = self._update_latent(latents=latents, loss=loss,
                                                               step_size=scale_factor * np.sqrt(scale_range[i]))
@@ -616,26 +683,26 @@ class AttendAndExcitePipeline(StableDiffusionPipeline):
                 ).sample
 
                 # perform guidance
-                if do_classifier_free_guidance:
+                if do_classifier_free_guidance: 
                     noise_pred_uncond, noise_pred_text = noise_pred.chunk(2)
                     noise_pred = noise_pred_uncond + guidance_scale * (noise_pred_text - noise_pred_uncond)
 
                 # compute the previous noisy sample x_t -> x_t-1
-                latents = self.scheduler.step(noise_pred, t, latents, **extra_step_kwargs).prev_sample
+                latents = self.scheduler.step(noise_pred, t, latents, **extra_step_kwargs).prev_sample #we should keep it (original)- noa 15.8.24
 
-                # call the callback, if provided
+                # call the callback, if provided #we should keep it (original)- noa 15.8.24
                 if i == len(timesteps) - 1 or ((i + 1) > num_warmup_steps and (i + 1) % self.scheduler.order == 0):
                     progress_bar.update()
                     if callback is not None and i % callback_steps == 0:
                         callback(i, t, latents)
 
         # 8. Post-processing
-        image = self.decode_latents(latents)
+        image = self.decode_latents(latents) #we should keep it (original)- noa 15.8.24
 
         # 9. Run safety checker
-        image, has_nsfw_concept = self.run_safety_checker(image, device, prompt_embeds.dtype)
+        image, has_nsfw_concept = self.run_safety_checker(image, device, prompt_embeds.dtype) #think if we should keep it? - noa 15.8.24
 
-        # 10. Convert to PIL
+        # 10. Convert to PIL #we should keep it (original)- noa 15.8.24 
         if output_type == "pil":
             image = self.numpy_to_pil(image)
 
