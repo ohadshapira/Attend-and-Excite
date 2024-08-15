@@ -272,6 +272,7 @@ class AttendAndExcitePipeline(StableDiffusionPipeline):
 
 
     def count_objects_by_indices(self,sentence, object_indices):
+        """creates dict from prompt for the number of objects needed for each object"""
         object_indices_offset_corrected=[i-1 for i in object_indices]
         tokens = word_tokenize(sentence.lower())
 
@@ -313,16 +314,16 @@ class AttendAndExcitePipeline(StableDiffusionPipeline):
             return loss
 
     #noa added 15.8.24 -------------------------------------------------------------------------------------------------------------------------------------------------------START            
-    def _compute_loss_make_it_count_project(prompt_num_object: Dict[str, int], detector_num_object: Dict[str, int], return_losses: bool = False) -> torch.Tensor:
+    def _compute_loss_make_it_count_project(self, prompt_num_object_main: Dict[str, int], detector_num_object_main: Dict[str, int], return_losses: bool = False) -> torch.Tensor:
         """ Computes the make-it-count-project loss using the maximum L2 distance for each token.  """
         losses = []
         
         # Combine keys from both dictionaries to ensure all objects are considered.
-        all_objects = set(prompt_num_object.keys()).union(set(detector_num_object.keys()))
+        all_objects = set(prompt_num_object_main.keys()).union(set(detector_num_object_main.keys()))
         
         for obj in all_objects:
-            count_prompt = prompt_num_object.get(obj, 0)
-            count_detector = detector_num_object.get(obj, 0)
+            count_prompt = prompt_num_object_main.get(obj, 0)
+            count_detector = detector_num_object_main.get(obj, 0)
             l2_distance = (count_prompt - count_detector) ** 2
             losses.append(torch.tensor(l2_distance, dtype=torch.float32))
         
@@ -350,7 +351,7 @@ class AttendAndExcitePipeline(StableDiffusionPipeline):
         self.unet.zero_grad()
 
         # compute loss
-        loss, losses = self._compute_loss_make_it_count_project(prompt_num_object=prompt_num_object, detector_num_object=detector_num_object, return_losses=True)
+        loss, losses = self._compute_loss_make_it_count_project(prompt_num_object_main=prompt_num_object, detector_num_object_main=detector_num_object, return_losses=True)
 
         if loss != 0:
             latents = self._update_latent(latents, loss, step_size)
@@ -637,6 +638,10 @@ class AttendAndExcitePipeline(StableDiffusionPipeline):
         # Load YOLO model (using a pre-trained model, e.g., YOLOv5)
         model_yolo = torch.hub.load('ultralytics/yolov5', 'yolov5s') #noa added 15.8.24
 
+        prompt_num_object = self.count_objects_by_indices(prompt, indices_to_alter) #noa added 15.8.24 - dict of prompt
+        print(f'prompt_num_object is: {prompt_num_object}')
+
+        pipe_line_type = 'old'
         #-------------------------noa added 14-15.8.24 - end
 
         # 7. Denoising loop
@@ -673,15 +678,24 @@ class AttendAndExcitePipeline(StableDiffusionPipeline):
                     results_yolo = model_yolo(image_lcm_np)#noa added 15.8.24
                     print(f'results_yolo in iter {i} are: {results_yolo}')#noa added 15.8.24
 
-                    #prompt_num_object = count_objects_by_indices(self,prompt, indices_to_alter)
-                    #detector_num_object = object_dict_from_dtector(self,results_yolo)
+                    detector_num_object = self.object_dict_from_dtector(results_yolo) #noa added 15.8.24 - dict of detector  
+                    print(f'detector_num_object is: {detector_num_object}')
 
-                    #loss_lcm = self._compute_loss_make_it_count_project(prompt_num_object=prompt_num_object, detector_num_object=detector_num_object) - noa added 15.8.24 (use Ohad's functions output)
-                    #print(f'loss_lcm in iter {i} are: {loss_lcm}')#noa added 15.8.24                                                                                                                                                  
+                    #loss_lcm = self._compute_loss_make_it_count_project(prompt_num_object_main=prompt_num_object, detector_num_object_main=detector_num_object) # noa added 15.8.24 (use Ohad's functions output)
+                    #print(f'loss_lcm in iter {i} are: {loss_lcm}')#noa added 15.8.24      
+                    
+                    #loss = self._compute_loss_make_it_count_project(prompt_num_object_main=prompt_num_object, detector_num_object_main=detector_num_object)# noa added 15.8.24 (use Ohad's functions output)
+                    #print(f'loss_lcm in iter {i} are: {loss}')#noa added 15.8.24    
+                    # 
+                    # Perform gradient update - Noa added 15.8.24 - Start
+                    #latents = self._update_latent(latents=latents, loss=loss,
+                    #                            step_size=scale_factor * np.sqrt(scale_range[i]))
+                    #print(f'Iteration {i} | Loss: {loss:0.4f}')                                                                                                                                         
                     #----------------------------------------------------------------------------------------------noa added 14.8.24 - for LCM model - end
 
-                    # Get max activation value for each subject token
-                    max_attention_per_index = self._aggregate_and_get_max_attention_per_token( #remove - we do not need in our project - noa - 15.8.24
+                    if pipe_line_type == 'old': #noa added 15.8.24 - old pipeline - if use old pipeline
+                        # Get max activation value for each subject token
+                        max_attention_per_index = self._aggregate_and_get_max_attention_per_token( #remove - we do not need in our project - noa - 15.8.24
                         attention_store=attention_store,
                         indices_to_alter=indices_to_alter,
                         attention_res=attention_res,
@@ -690,39 +704,37 @@ class AttendAndExcitePipeline(StableDiffusionPipeline):
                         kernel_size=kernel_size,
                         normalize_eot=sd_2_1)
 
-                    if not run_standard_sd: #I do not think we need that *if* - Noa 15.8.24 (it is if we want to run the stable diffusion without attend-and-excite changes)
-
-                        loss = self._compute_loss(max_attention_per_index=max_attention_per_index)
-                        #loss = self._compute_loss_make_it_count_project(prompt_num_object=prompt_num_object, detector_num_object=detector_num_object) - noa added 15.8.24 (use Ohad's functions output)
-
-                        # If this is an iterative refinement step, verify we have reached the desired threshold for all
-                        if i in thresholds.keys() and loss > 1. - thresholds[i]:
-                            del noise_pred_text
-                            torch.cuda.empty_cache()
-                            loss, latents, max_attention_per_index = self._perform_iterative_refinement_step(
-                                latents=latents,
-                                indices_to_alter=indices_to_alter,
-                                loss=loss,
-                                threshold=thresholds[i],
-                                text_embeddings=prompt_embeds,
-                                text_input=text_inputs,
-                                attention_store=attention_store,
-                                step_size=scale_factor * np.sqrt(scale_range[i]),
-                                t=t,
-                                attention_res=attention_res,
-                                smooth_attentions=smooth_attentions,
-                                sigma=sigma,
-                                kernel_size=kernel_size,
-                                normalize_eot=sd_2_1)
-
-                        # Perform gradient update - #we should keep it (original)- noa 15.8.24 (think about the if statment)
-                        if i < max_iter_to_alter:
+                        if not run_standard_sd: #I do not think we need that *if* - Noa 15.8.24 (it is if we want to run the stable diffusion without attend-and-excite changes)
                             loss = self._compute_loss(max_attention_per_index=max_attention_per_index)
-                            #loss = self._compute_loss_make_it_count_project(prompt_num_object=prompt_num_object, detector_num_object=detector_num_object) - noa added 15.8.24 (use Ohad's functions output)
-                            if loss != 0:
-                                latents = self._update_latent(latents=latents, loss=loss,
-                                                              step_size=scale_factor * np.sqrt(scale_range[i]))
-                            print(f'Iteration {i} | Loss: {loss:0.4f}')
+ 
+                            # If this is an iterative refinement step, verify we have reached the desired threshold for all
+                            if i in thresholds.keys() and loss > 1. - thresholds[i]:
+                                del noise_pred_text
+                                torch.cuda.empty_cache()
+                                loss, latents, max_attention_per_index = self._perform_iterative_refinement_step(
+                                    latents=latents,
+                                    indices_to_alter=indices_to_alter,
+                                    loss=loss,
+                                    threshold=thresholds[i],
+                                    text_embeddings=prompt_embeds,
+                                    text_input=text_inputs,
+                                    attention_store=attention_store,
+                                    step_size=scale_factor * np.sqrt(scale_range[i]),
+                                    t=t,
+                                    attention_res=attention_res,
+                                    smooth_attentions=smooth_attentions,
+                                    sigma=sigma,
+                                    kernel_size=kernel_size,
+                                    normalize_eot=sd_2_1)
+
+                            # Perform gradient update - #we should keep it (original)- noa 15.8.24 (think about the if statment)
+                            if i < max_iter_to_alter:
+                                loss = self._compute_loss(max_attention_per_index=max_attention_per_index)
+                                #loss = self._compute_loss_make_it_count_project(prompt_num_object=prompt_num_object, detector_num_object=detector_num_object) - noa added 15.8.24 (use Ohad's functions output)
+                                if loss != 0:
+                                    latents = self._update_latent(latents=latents, loss=loss,
+                                                                step_size=scale_factor * np.sqrt(scale_range[i]))
+                                print(f'Iteration {i} | Loss: {loss:0.4f}')
 
                 # expand the latents if we are doing classifier free guidance
                 latent_model_input = torch.cat([latents] * 2) if do_classifier_free_guidance else latents
