@@ -27,8 +27,8 @@ import matplotlib.pyplot as plt #noa added 14.08.24
 #from transformers import AutoTokenizer #noa added 14.08.24
 #from diffusers import PNDMScheduler #noa added 14.08.24
 
-from utils.gaussian_smoothing import GaussianSmoothing
-from utils.ptp_utils import AttentionStore, aggregate_attention
+from utils_project.gaussian_smoothing import GaussianSmoothing #noa update name of utils dir to utils_project, 15.8.24
+from utils_project.ptp_utils import AttentionStore, aggregate_attention #noa update name of utils dir to utils_project, 15.8.24
 
 logger = logging.get_logger(__name__)
 
@@ -515,13 +515,17 @@ class AttendAndExcitePipeline(StableDiffusionPipeline):
         model_lcm_id = "Lykon/dreamshaper-7"
         adapter_lcm_id = "latent-consistency/lcm-lora-sdv1-5"
 
-        pipe_lcm = AutoPipelineForText2Image.from_pretrained(model_lcm_id, torch_dtype=torch.float16, variant="fp16")
+        pipe_lcm = AutoPipelineForText2Image.from_pretrained(model_lcm_id, torch_dtype=torch.float16, variant="fp16", safety_checker = None, requires_safety_checker = False)
         pipe_lcm.scheduler = LCMScheduler.from_config(pipe_lcm.scheduler.config)
         pipe_lcm.to("cuda") # Use GPU for faster generation
 
         # load and fuse lcm lora
         pipe_lcm.load_lora_weights(adapter_lcm_id)
         pipe_lcm.fuse_lora()
+
+        # Load YOLO model (using a pre-trained model, e.g., YOLOv5)
+        model_yolo = torch.hub.load('ultralytics/yolov5', 'yolov5s') #noa added 15.8.24
+
         #-------------------------noa added 14.8.24 - end
 
         # 7. Denoising loop
@@ -542,13 +546,19 @@ class AttendAndExcitePipeline(StableDiffusionPipeline):
                     # Generate the image using the pipeline and latent variables
                     image_lcm = pipe_lcm(
                         prompt=prompt,
-                        num_inference_steps=4,
+                        num_inference_steps=10,
                         generator=generator,
                         guidance_scale=8.0,
                         latent_vars=latents  # Pass the latent variables here
                     ).images[0]
                     # save the generated image
                     image_lcm.save(f'./outputs/lcm_denoise_step_{i}.png')
+
+                    # Convert the PIL image to a format suitable for YOLO (numpy array)
+                    image_lcm_np = np.array(image_lcm) #noa added 15.8.24
+                    # Perform object detection on the generated image
+                    results_yolo = model_yolo(image_lcm_np)#noa added 15.8.24
+                    print(f'results_yolo in iter {i} are: {results_yolo}')#noa added 15.8.24
                     #----------------------------------------------------------------------------------------------noa added 14.8.24 - for LCM model - end
 
                     # Get max activation value for each subject token

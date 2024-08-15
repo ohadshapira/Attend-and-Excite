@@ -7,8 +7,8 @@ from PIL import Image
 
 from config import RunConfig
 from pipeline_attend_and_excite import AttendAndExcitePipeline
-from utils import ptp_utils, vis_utils
-from utils.ptp_utils import AttentionStore
+from utils_project import ptp_utils, vis_utils #noa update name of utils dir to utils_project, 15.8.24
+from utils_project.ptp_utils import AttentionStore #noa update name of utils dir to utils_project, 15.8.24
 
 import warnings
 warnings.filterwarnings("ignore", category=UserWarning)
