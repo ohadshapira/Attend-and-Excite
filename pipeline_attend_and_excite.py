@@ -30,6 +30,18 @@ import matplotlib.pyplot as plt #noa added 14.08.24
 from utils_project.gaussian_smoothing import GaussianSmoothing #noa update name of utils dir to utils_project, 15.8.24
 from utils_project.ptp_utils import AttentionStore, aggregate_attention #noa update name of utils dir to utils_project, 15.8.24
 
+
+#--------------------------Ohad added 15.8.24 - prompt to dict - start
+import nltk
+from collections import defaultdict
+from nltk.tokenize import word_tokenize
+from nltk.stem import WordNetLemmatizer
+
+# Download necessary nltk data
+nltk.download('punkt')
+nltk.download('wordnet')
+#--------------------------Ohad added 15.8.24 - prompt to dict - end
+
 logger = logging.get_logger(__name__)
 
 class AttendAndExcitePipeline(StableDiffusionPipeline):
@@ -250,6 +262,33 @@ class AttendAndExcitePipeline(StableDiffusionPipeline):
             kernel_size=kernel_size,
             normalize_eot=normalize_eot)
         return max_attention_per_index
+
+
+    #--------------------------Ohad added 15.8.24 - prompt to dict - start
+    @staticmethod
+    def lemmatize_word(word):
+        lemmatizer = WordNetLemmatizer()
+        return lemmatizer.lemmatize(word, pos='n')
+
+
+    def count_objects_by_indices(self,sentence, object_indices):
+        tokens = word_tokenize(sentence.lower())
+
+        counts = defaultdict(int)
+
+        for index in object_indices:
+            word = tokens[index-1]
+            # Look for a number preceding the object (assume it immediately precedes the object)
+            number = 1  # Default count
+            if index > 0 and tokens[index - 1].isdigit():
+                number = int(tokens[index - 1])
+
+            # Convert the word to its singular form
+            singular_form = self.lemmatize_word(word)
+            counts[singular_form] += number
+
+        return dict(counts)
+    #--------------------------Ohad added 15.8.24 - prompt to dict - end
 
     @staticmethod
     def _compute_loss(max_attention_per_index: List[torch.Tensor], return_losses: bool = False) -> torch.Tensor: #we should **NOT** keep it (original)- noa 15.8.24
