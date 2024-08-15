@@ -272,12 +272,13 @@ class AttendAndExcitePipeline(StableDiffusionPipeline):
 
 
     def count_objects_by_indices(self,sentence, object_indices):
+        object_indices_offset_corrected=[i-1 for i in object_indices]
         tokens = word_tokenize(sentence.lower())
 
         counts = defaultdict(int)
 
-        for index in object_indices:
-            word = tokens[index-1]
+        for index in object_indices_offset_corrected:
+            word = tokens[index]
             # Look for a number preceding the object (assume it immediately precedes the object)
             number = 1  # Default count
             if index > 0 and tokens[index - 1].isdigit():
