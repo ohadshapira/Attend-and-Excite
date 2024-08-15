@@ -675,7 +675,7 @@ class AttendAndExcitePipeline(StableDiffusionPipeline):
 
                     #prompt_num_object = count_objects_by_indices(self,prompt, indices_to_alter)
                     #detector_num_object = object_dict_from_dtector(self,results_yolo)
-                    
+
                     #loss_lcm = self._compute_loss_make_it_count_project(prompt_num_object=prompt_num_object, detector_num_object=detector_num_object) - noa added 15.8.24 (use Ohad's functions output)
                     #print(f'loss_lcm in iter {i} are: {loss_lcm}')#noa added 15.8.24                                                                                                                                                  
                     #----------------------------------------------------------------------------------------------noa added 14.8.24 - for LCM model - end
