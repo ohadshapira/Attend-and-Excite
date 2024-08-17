@@ -5,6 +5,7 @@ from typing import Any, Callable, Dict, List, Optional, Union, Tuple
 import numpy as np
 import torch
 from torch.nn import functional as F
+from pathlib import Path
 
 from packaging import version
 from transformers import CLIPFeatureExtractor, CLIPTextModel, CLIPTokenizer
@@ -271,10 +272,10 @@ class AttendAndExcitePipeline(StableDiffusionPipeline):
         return lemmatizer.lemmatize(word, pos='n')
 
 
-    def count_objects_by_indices(self,sentence, object_indices):
+    def count_objects_by_indices(self,prompt, object_indices):
         """creates dict from prompt for the number of objects needed for each object"""
         object_indices_offset_corrected=[i-1 for i in object_indices]
-        tokens = word_tokenize(sentence.lower())
+        tokens = word_tokenize(prompt.lower())
 
         counts = defaultdict(int)
 
@@ -318,10 +319,10 @@ class AttendAndExcitePipeline(StableDiffusionPipeline):
         """ Computes the make-it-count-project loss using the maximum L2 distance for each token.  """
         losses = []
         
-        # Combine keys from both dictionaries to ensure all objects are considered.
+        # Combine keys from both dictionaries to ensure all objects are considered. # Ohad : I think we only need the keys from the prompt indices
         all_objects = set(prompt_num_object_main.keys()).union(set(detector_num_object_main.keys()))
         
-        for obj in all_objects:
+        for obj in prompt_num_object_main.keys():# was: 'for obj in all_objects:' # ohad changed: only objects that in prompt are relevant
             count_prompt = prompt_num_object_main.get(obj, 0)
             count_detector = detector_num_object_main.get(obj, 0)
             l2_distance = (count_prompt - count_detector) ** 2
@@ -670,7 +671,11 @@ class AttendAndExcitePipeline(StableDiffusionPipeline):
                         latent_vars=latents  # Pass the latent variables here
                     ).images[0]
                     # save the generated image
-                    image_lcm.save(f'./outputs/lcm_denoise_step_{i}.png')
+                    try:
+                        Path.mkdir(f'./outputs/{prompt}')
+                    except Exception as e:
+                        pass
+                    image_lcm.save(f'./outputs/{prompt}/lcm_denoise_step_{i}.png')
 
                     # Convert the PIL image to a format suitable for YOLO (numpy array)
                     image_lcm_np = np.array(image_lcm) #noa added 15.8.24
@@ -680,6 +685,10 @@ class AttendAndExcitePipeline(StableDiffusionPipeline):
 
                     detector_num_object = self.object_dict_from_dtector(results_yolo) #noa added 15.8.24 - dict of detector  
                     print(f'detector_num_object is: {detector_num_object}')
+
+                    prompt_num_object=self.count_objects_by_indices(prompt,object_indices=indices_to_alter) # ohad added 17.8
+                    print(f'prompt_num_object is: {detector_num_object}')
+
 
                     #loss_lcm = self._compute_loss_make_it_count_project(prompt_num_object_main=prompt_num_object, detector_num_object_main=detector_num_object) # noa added 15.8.24 (use Ohad's functions output)
                     #print(f'loss_lcm in iter {i} are: {loss_lcm}')#noa added 15.8.24      
@@ -730,11 +739,12 @@ class AttendAndExcitePipeline(StableDiffusionPipeline):
                             # Perform gradient update - #we should keep it (original)- noa 15.8.24 (think about the if statment)
                             if i < max_iter_to_alter:
                                 loss = self._compute_loss(max_attention_per_index=max_attention_per_index)
-                                #loss = self._compute_loss_make_it_count_project(prompt_num_object=prompt_num_object, detector_num_object=detector_num_object) - noa added 15.8.24 (use Ohad's functions output)
+                                # loss = self._compute_loss_make_it_count_project(prompt_num_object_main=prompt_num_object, detector_num_object_main=detector_num_object) #- noa added 15.8.24 (use Ohad's functions output)
                                 if loss != 0:
                                     latents = self._update_latent(latents=latents, loss=loss,
                                                                 step_size=scale_factor * np.sqrt(scale_range[i]))
                                 print(f'Iteration {i} | Loss: {loss:0.4f}')
+
 
                 # expand the latents if we are doing classifier free guidance
                 latent_model_input = torch.cat([latents] * 2) if do_classifier_free_guidance else latents
