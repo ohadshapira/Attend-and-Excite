@@ -318,10 +318,7 @@ class AttendAndExcitePipeline(StableDiffusionPipeline):
     def _compute_loss_make_it_count_project(self, prompt_num_object_main: Dict[str, int], detector_num_object_main: Dict[str, int], return_losses: bool = False) -> torch.Tensor:
         """ Computes the make-it-count-project loss using the maximum L2 distance for each token.  """
         losses = []
-        
-        # Combine keys from both dictionaries to ensure all objects are considered. # Ohad : I think we only need the keys from the prompt indices
-        all_objects = set(prompt_num_object_main.keys()).union(set(detector_num_object_main.keys()))
-        
+
         for obj in prompt_num_object_main.keys():# was: 'for obj in all_objects:' # ohad changed: only objects that in prompt are relevant
             count_prompt = prompt_num_object_main.get(obj, 0)
             count_detector = detector_num_object_main.get(obj, 0)
