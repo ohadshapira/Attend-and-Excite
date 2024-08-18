@@ -3,8 +3,11 @@ opencv-python
 ipywidgets
 matplotlib
 pyrallis
-torch==1.12.0
-diffusers==0.12.1
-transformers==4.26.0
+torch
+diffusers==0.24.0
+transformers==4.44.0
 jupyter
 accelerate
+nltk
+torchvision
+torchaudio
