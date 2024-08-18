@@ -24,7 +24,7 @@ from diffusers.pipelines.stable_diffusion.safety_checker import StableDiffusionS
 from diffusers.pipelines.stable_diffusion import StableDiffusionPipeline
 
 from diffusers import LCMScheduler, AutoPipelineForText2Image #noa added 14.08.24
-import matplotlib.pyplot as plt #noa added 14.08.24
+#import matplotlib.pyplot as plt #noa added 14.08.24
 #from transformers import AutoTokenizer #noa added 14.08.24
 #from diffusers import PNDMScheduler #noa added 14.08.24
 
@@ -674,8 +674,10 @@ class AttendAndExcitePipeline(StableDiffusionPipeline):
                     try:
                         Path.mkdir(f'./outputs/{prompt}')
                     except Exception as e:
+                        print(e)
                         pass
-                    image_lcm.save(f'./outputs/{prompt}/lcm_denoise_step_{i}.png')
+                    #image_lcm.save(f'./outputs/{prompt}/lcm_denoise_step_{i}.png')
+                    image_lcm.save(f'./outputs/lcm_denoise_step_{i}.png')
 
                     # Convert the PIL image to a format suitable for YOLO (numpy array)
                     image_lcm_np = np.array(image_lcm) #noa added 15.8.24
@@ -687,7 +689,7 @@ class AttendAndExcitePipeline(StableDiffusionPipeline):
                     print(f'detector_num_object is: {detector_num_object}')
 
                     prompt_num_object=self.count_objects_by_indices(prompt,object_indices=indices_to_alter) # ohad added 17.8
-                    print(f'prompt_num_object is: {detector_num_object}')
+                    print(f'prompt_num_object is: {prompt_num_object}')
 
 
                     #loss_lcm = self._compute_loss_make_it_count_project(prompt_num_object_main=prompt_num_object, detector_num_object_main=detector_num_object) # noa added 15.8.24 (use Ohad's functions output)
