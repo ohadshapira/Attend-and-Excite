@@ -314,6 +314,70 @@ class AttendAndExcitePipeline(StableDiffusionPipeline):
         else:
             return loss
 
+    #noa added 18.8.24 -------------------------------------------------------------------------------------------------------------------------------------------------------START 
+    def _compute_loss_make_it_count_project2(self, prompt_num_object_main: Dict[str, int], detector_num_object_main: Dict[str, int], return_losses: bool = False) -> torch.Tensor:
+        """ Computes the make-it-count-project loss using the maximum L2 distance for each token. """
+        losses = []
+
+        for obj in prompt_num_object_main.keys():  # Only consider objects that are in the prompt
+            count_prompt = torch.tensor(prompt_num_object_main.get(obj, 0), dtype=torch.float32, requires_grad=True)
+            count_detector = torch.tensor(detector_num_object_main.get(obj, 0), dtype=torch.float32, requires_grad=True)
+            
+            # Compute L2 distance and ensure it's differentiable
+            l2_distance = (count_prompt - count_detector) ** 2
+            
+            # Append loss for each object
+            losses.append(l2_distance)
+        
+        # Combine the losses
+        loss = torch.max(torch.stack(losses))  # Use max of losses
+        
+        if return_losses:
+            return loss, losses
+        else:
+            return loss
+          
+    def total_variation_loss(self, latents: torch.Tensor):
+        """
+        Computes the Total Variation (TV) Loss for the input tensor x.
+        Args:
+            x (torch.Tensor): Latent variable tensor of shape (batch_size, channels, height, width).
+        Returns:
+            torch.Tensor: Total variation loss.
+        """
+        loss = torch.mean(torch.abs(latents[:, :, :, :-1] - latents[:, :, :, 1:])) + \
+            torch.mean(torch.abs(latents[:, :, :-1, :] - latents[:, :, 1:, :]))
+        return loss
+
+    
+    def _compute_loss_with_tv(self, prompt_num_object_main: Dict[str, int], detector_num_object_main: Dict[str, int], latents: torch.Tensor, tv_weight: float = 0.1) -> torch.Tensor:
+        """
+        Computes the combined loss with object count and Total Variation (TV) Loss.
+        Args:
+            prompt_num_object_main (Dict[str, int]): Dictionary with object counts from the prompt.
+            detector_num_object_main (Dict[str, int]): Dictionary with object counts from the detector.
+            latents (torch.Tensor): Latent variables tensor.
+            tv_weight (float): Weight for the Total Variation Loss.
+        Returns:
+            torch.Tensor: Combined loss.
+        """
+        losses = []
+
+        for obj in prompt_num_object_main.keys():
+            count_prompt = prompt_num_object_main.get(obj, 0)
+            count_detector = detector_num_object_main.get(obj, 0)
+            l2_distance = (count_prompt - count_detector) ** 2
+            losses.append(l2_distance)
+
+        # Combine losses
+        object_count_loss = max(losses) if losses else torch.tensor(0.0, dtype=torch.float32)
+        tv_loss = self.total_variation_loss(latents)
+        total_loss = object_count_loss + tv_weight * tv_loss
+
+        return total_loss
+
+    #noa added 18.8.24 -------------------------------------------------------------------------------------------------------------------------------------------------------END 
+
     #noa added 15.8.24 -------------------------------------------------------------------------------------------------------------------------------------------------------START            
     def _compute_loss_make_it_count_project(self, prompt_num_object_main: Dict[str, int], detector_num_object_main: Dict[str, int], return_losses: bool = False) -> torch.Tensor:
         """ Computes the make-it-count-project loss using the maximum L2 distance for each token.  """
@@ -639,7 +703,7 @@ class AttendAndExcitePipeline(StableDiffusionPipeline):
         prompt_num_object = self.count_objects_by_indices(prompt, indices_to_alter) #noa added 15.8.24 - dict of prompt
         print(f'prompt_num_object is: {prompt_num_object}')
 
-        pipe_line_type = 'old'
+        pipe_line_type = 'new'
         #-------------------------noa added 14-15.8.24 - end
 
         # 7. Denoising loop
@@ -656,52 +720,45 @@ class AttendAndExcitePipeline(StableDiffusionPipeline):
                                                 encoder_hidden_states=prompt_embeds[1].unsqueeze(0), cross_attention_kwargs=cross_attention_kwargs).sample
                     self.unet.zero_grad()
 
-                    #---------------------------------------------------------------------------------------------noa added 14.8.24 - for LCM model - start
-                
-                    # Generate the image using the pipeline and latent variables
-                    image_lcm = pipe_lcm(
-                        prompt=prompt,
-                        #prompt_embeds=prompt_embeds,
-                        num_inference_steps=8,
-                        generator=generator,
-                        guidance_scale=2.0,
-                        latent_vars=latents  # Pass the latent variables here
-                    ).images[0]
-                    # save the generated image
-                    try:
-                        Path.mkdir(f'./outputs/{prompt}')
-                    except Exception as e:
-                        print(e)
-                        pass
-                    #image_lcm.save(f'./outputs/{prompt}/lcm_denoise_step_{i}.png')
-                    image_lcm.save(f'./outputs/lcm_denoise_step_{i}.png')
+                    #---------------------------------------------------------------------------------------------noa added 14.8.24 - for LCM model - start 
+                    if pipe_line_type == 'old': #if running old pipeline simulatnusly...             
+                        # Generate the image using the pipeline and latent variables
+                        image_lcm = pipe_lcm(
+                            prompt=prompt,
+                            #prompt_embeds=prompt_embeds,
+                            num_inference_steps=8,
+                            generator=generator,
+                            guidance_scale=2.0,
+                            latent_vars=latents  # Pass the latent variables here
+                        ).images[0]
+                        # save the generated image
+                        try:
+                            Path.mkdir(f'./outputs/{prompt}')
+                        except Exception as e:
+                            print(e)
+                            pass
+                        #image_lcm.save(f'./outputs/{prompt}/lcm_denoise_step_{i}.png')
+                        image_lcm.save(f'./outputs/lcm_denoise_step_{i}.png')
 
-                    # Convert the PIL image to a format suitable for YOLO (numpy array)
-                    image_lcm_np = np.array(image_lcm) #noa added 15.8.24
-                    # Perform object detection on the generated image
-                    results_yolo = model_yolo(image_lcm_np)#noa added 15.8.24
-                    print(f'results_yolo in iter {i} are: {results_yolo}')#noa added 15.8.24
+                        # Convert the PIL image to a format suitable for YOLO (numpy array)
+                        image_lcm_np = np.array(image_lcm) #noa added 15.8.24
+                        # Perform object detection on the generated image
+                        results_yolo = model_yolo(image_lcm_np)#noa added 15.8.24
+                        print(f'results_yolo in iter {i} are: {results_yolo}')#noa added 15.8.24
 
-                    detector_num_object = self.object_dict_from_dtector(results_yolo) #noa added 15.8.24 - dict of detector  
-                    print(f'detector_num_object is: {detector_num_object}')
+                        detector_num_object = self.object_dict_from_dtector(results_yolo) #noa added 15.8.24 - dict of detector  
+                        print(f'detector_num_object is: {detector_num_object}')
 
-                    prompt_num_object=self.count_objects_by_indices(prompt,object_indices=indices_to_alter) # ohad added 17.8
-                    print(f'prompt_num_object is: {prompt_num_object}')
+                        prompt_num_object=self.count_objects_by_indices(prompt,object_indices=indices_to_alter) # ohad added 17.8
+                        print(f'prompt_num_object is: {prompt_num_object}')
 
+                        loss_lcm = self._compute_loss_make_it_count_project2(prompt_num_object_main=prompt_num_object, detector_num_object_main=detector_num_object) # noa added 15.8.24 (use Ohad's functions output)
+                        print(f'loss_lcm in iter {i} are: {loss_lcm}')#noa added 15.8.24          
 
-                    #loss_lcm = self._compute_loss_make_it_count_project(prompt_num_object_main=prompt_num_object, detector_num_object_main=detector_num_object) # noa added 15.8.24 (use Ohad's functions output)
-                    #print(f'loss_lcm in iter {i} are: {loss_lcm}')#noa added 15.8.24      
-                    
-                    #loss = self._compute_loss_make_it_count_project(prompt_num_object_main=prompt_num_object, detector_num_object_main=detector_num_object)# noa added 15.8.24 (use Ohad's functions output)
-                    #print(f'loss_lcm in iter {i} are: {loss}')#noa added 15.8.24    
-                    # 
-                    # Perform gradient update - Noa added 15.8.24 - Start
-                    #latents = self._update_latent(latents=latents, loss=loss,
-                    #                            step_size=scale_factor * np.sqrt(scale_range[i]))
-                    #print(f'Iteration {i} | Loss: {loss:0.4f}')                                                                                                                                         
-                    #----------------------------------------------------------------------------------------------noa added 14.8.24 - for LCM model - end
+                        loss_lcm2 = self._compute_loss_with_tv(prompt_num_object_main=prompt_num_object, detector_num_object_main= detector_num_object, latents=latents)  
+                        print(f'loss_lcm2 in iter {i} are: {loss_lcm2}')#noa added 15.8.24                                                                                                                         
+                        #----------------------------------------------------------------------------------------------noa added 14.8.24 - for LCM model - end
 
-                    if pipe_line_type == 'old': #noa added 15.8.24 - old pipeline - if use old pipeline
                         # Get max activation value for each subject token
                         max_attention_per_index = self._aggregate_and_get_max_attention_per_token( #remove - we do not need in our project - noa - 15.8.24
                         attention_store=attention_store,
@@ -744,6 +801,52 @@ class AttendAndExcitePipeline(StableDiffusionPipeline):
                                                                 step_size=scale_factor * np.sqrt(scale_range[i]))
                                 print(f'Iteration {i} | Loss: {loss:0.4f}')
 
+                    else: #noa added 18.8.24 - for our pipeline
+                    #---------------------------------------------------------------------------------------------noa added 14.8.24 - for LCM model - start               
+                        # Generate the image using the pipeline and latent variables
+                        image_lcm = pipe_lcm(
+                            prompt=prompt,
+                            #prompt_embeds=prompt_embeds,
+                            num_inference_steps=8,
+                            generator=generator,
+                            guidance_scale=2.0,
+                            latent_vars=latents  # Pass the latent variables here
+                        ).images[0]
+                        # save the generated image
+                        try:
+                            Path.mkdir(f'./outputs/{prompt}')
+                        except Exception as e:
+                            print(e)
+                            pass
+                        #image_lcm.save(f'./outputs/{prompt}/lcm_denoise_step_{i}.png')
+                        image_lcm.save(f'./outputs/lcm_denoise_step_{i}.png')
+
+                        # Convert the PIL image to a format suitable for YOLO (numpy array)
+                        image_lcm_np = np.array(image_lcm) #noa added 15.8.24
+                        # Perform object detection on the generated image
+                        results_yolo = model_yolo(image_lcm_np)#noa added 15.8.24
+                        print(f'results_yolo in iter {i} are: {results_yolo}')#noa added 15.8.24
+
+                        detector_num_object = self.object_dict_from_dtector(results_yolo) #noa added 15.8.24 - dict of detector  
+                        print(f'detector_num_object is: {detector_num_object}')
+
+                        prompt_num_object=self.count_objects_by_indices(prompt,object_indices=indices_to_alter) # ohad added 17.8
+                        print(f'prompt_num_object is: {prompt_num_object}')
+
+                        loss_lcm = self._compute_loss_make_it_count_project2(prompt_num_object_main=prompt_num_object, detector_num_object_main=detector_num_object) # noa added 15.8.24 (use Ohad's functions output)
+                        print(f'loss_lcm in iter {i} are: {loss_lcm}')#noa added 15.8.24      
+                        
+                        #loss = self._compute_loss_make_it_count_project2(prompt_num_object_main=prompt_num_object, detector_num_object_main=detector_num_object)# noa added 15.8.24 (use Ohad's functions output)
+                        #print(f'loss_lcm in iter {i} are: {loss}')#noa added 15.8.24 
+                         
+                        loss = self._compute_loss_with_tv(prompt_num_object_main=prompt_num_object, detector_num_object_main= detector_num_object, latents=latents)  #noad added 18.8.24
+                        print(f'loss in iter {i} are: {loss}')#noa added 15.8.24        
+                        
+                        #Perform gradient update - Noa added 15.8.24 - Start
+                        latents = self._update_latent(latents=latents, loss=loss,
+                                                   step_size=scale_factor * np.sqrt(scale_range[i]))
+                        print(f'Iteration {i} | Loss: {loss:0.4f}')                                                                                                                                         
+                        #----------------------------------------------------------------------------------------------noa added 14.8.24 - for LCM model - end
 
                 # expand the latents if we are doing classifier free guidance
                 latent_model_input = torch.cat([latents] * 2) if do_classifier_free_guidance else latents
