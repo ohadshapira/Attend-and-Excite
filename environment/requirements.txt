@@ -11,3 +11,4 @@ accelerate
 nltk
 torchvision
 torchaudio
+word2number

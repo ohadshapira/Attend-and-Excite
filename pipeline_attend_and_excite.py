@@ -37,11 +37,13 @@ import nltk
 from collections import defaultdict
 from nltk.tokenize import word_tokenize
 from nltk.stem import WordNetLemmatizer
+from word2number import w2n #noa added 19.8.24 - for prompt converting to dict
 
 # Download necessary nltk data
 nltk.download('punkt')
 nltk.download('wordnet')
 #--------------------------Ohad added 15.8.24 - prompt to dict - end
+import matplotlib.pyplot as plt #noa added 19.8.24
 
 logger = logging.get_logger(__name__)
 
@@ -272,7 +274,7 @@ class AttendAndExcitePipeline(StableDiffusionPipeline):
         return lemmatizer.lemmatize(word, pos='n')
 
 
-    def count_objects_by_indices(self,prompt, object_indices):
+    def count_objects_by_indices_nums(self,prompt, object_indices): #noa - changed func name to _nums - and added a func
         """creates dict from prompt for the number of objects needed for each object"""
         object_indices_offset_corrected=[i-1 for i in object_indices]
         tokens = word_tokenize(prompt.lower())
@@ -292,6 +294,41 @@ class AttendAndExcitePipeline(StableDiffusionPipeline):
 
         return dict(counts)
     #--------------------------Ohad added 15.8.24 - prompt to dict - end
+
+    #----------------------------Noa Added 19.8.24 - prompt to dict with words - START
+    def count_objects_by_indices(self, prompt, object_indices):
+        """
+        Creates a dictionary from the prompt for the number of objects
+        needed for each object, using the given indices.
+        """
+        # Convert the indices to be 0-based (since Python lists are 0-indexed)
+        object_indices_offset_corrected = [i-1 for i in object_indices]
+        tokens = word_tokenize(prompt.lower())  # Tokenize the prompt into words
+
+        counts = defaultdict(int)  # Dictionary to store the count of each object
+
+        for index in object_indices_offset_corrected:
+            word = tokens[index]
+
+            # Look for a number preceding the object (assume it immediately precedes the object)
+            if index > 0:
+                prev_word = tokens[index - 1]
+                try:
+                    if prev_word.isdigit():
+                        number = int(prev_word)  # Convert digit-based number to integer
+                    else:
+                        number = w2n.word_to_num(prev_word)  # Convert word-based number to integer
+                except ValueError:
+                    number = 1  # Default count if the word is not a number
+            else:
+                number = 1  # Default count if there's no preceding word
+            
+            # Convert the object word to its singular form
+            singular_form = self.lemmatize_word(word)
+            counts[singular_form] += number  # Update the object count in the dictionary
+
+        return dict(counts)  # Return the dictionary with object counts
+    #----------------------------Noa Added 19.8.24 - prompt to dict with words - START
 
     #-------------------------Noa added 15.8.24 - detector to dict - start
     # Get the detected object counts from YOLO results
@@ -701,8 +738,11 @@ class AttendAndExcitePipeline(StableDiffusionPipeline):
         # Load YOLO model (using a pre-trained model, e.g., YOLOv5)
         model_yolo = torch.hub.load('ultralytics/yolov5', 'yolov5s') #noa added 15.8.24
 
-        prompt_num_object = self.count_objects_by_indices(prompt, indices_to_alter) #noa added 15.8.24 - dict of prompt
+        prompt_num_object = self.count_objects_by_indices(prompt, object_indices=indices_to_alter) #noa added 15.8.24 - dict of prompt
         print(f'prompt_num_object is: {prompt_num_object}')
+
+        # Initialize a list to store loss values - noa added 19.8.24
+        loss_values = []
 
         pipe_line_type = 'new'
         #-------------------------noa added 14-15.8.24 - end
@@ -810,7 +850,7 @@ class AttendAndExcitePipeline(StableDiffusionPipeline):
                             #prompt_embeds=prompt_embeds,
                             num_inference_steps=8,
                             generator=generator,
-                            guidance_scale=2.0,
+                            guidance_scale=3.0,
                             latent_vars=latents  # Pass the latent variables here
                         ).images[0]
                         # save the generated image
@@ -831,21 +871,25 @@ class AttendAndExcitePipeline(StableDiffusionPipeline):
                         detector_num_object = self.object_dict_from_dtector(results_yolo) #noa added 15.8.24 - dict of detector  
                         print(f'detector_num_object is: {detector_num_object}')
 
-                        prompt_num_object=self.count_objects_by_indices(prompt,object_indices=indices_to_alter) # ohad added 17.8
+                        #prompt_num_object=self.count_objects_by_indices(prompt,object_indices=indices_to_alter) # ohad added 17.8
                         print(f'prompt_num_object is: {prompt_num_object}')
 
-                        loss_lcm = self._compute_loss_make_it_count_project2(prompt_num_object_main=prompt_num_object, detector_num_object_main=detector_num_object) # noa added 15.8.24 (use Ohad's functions output)
-                        print(f'loss_lcm in iter {i} are: {loss_lcm}')#noa added 15.8.24      
+                        #loss_lcm = self._compute_loss_make_it_count_project2(prompt_num_object_main=prompt_num_object, detector_num_object_main=detector_num_object) # noa added 15.8.24 (use Ohad's functions output)
+                        #print(f'loss_lcm in iter {i} are: {loss_lcm}')#noa added 15.8.24      
                         
                         #loss = self._compute_loss_make_it_count_project2(prompt_num_object_main=prompt_num_object, detector_num_object_main=detector_num_object)# noa added 15.8.24 (use Ohad's functions output)
                         #print(f'loss_lcm in iter {i} are: {loss}')#noa added 15.8.24 
                          
                         loss = self._compute_loss_with_tv(prompt_num_object_main=prompt_num_object, detector_num_object_main= detector_num_object, latents=latents)  #noad added 18.8.24
-                        print(f'loss in iter {i} are: {loss}')#noa added 15.8.24        
+                        #print(f'loss in iter {i} are: {loss}')#noa added 15.8.24  
+                            
+                        # Store the scalar value of the loss
+                        loss_values.append(loss.item())  #noa added 19.8.24
                         
                         #Perform gradient update - Noa added 15.8.24 - Start
                         latents = self._update_latent(latents=latents, loss=loss,
                                                    step_size=scale_factor * np.sqrt(scale_range[i]))
+                        print('latents were updated using lcm loss')
                         print(f'Iteration {i} | Loss: {loss:0.4f}')                                                                                                                                         
                         #----------------------------------------------------------------------------------------------noa added 14.8.24 - for LCM model - end
 
@@ -885,7 +929,22 @@ class AttendAndExcitePipeline(StableDiffusionPipeline):
         if output_type == "pil":
             image = self.numpy_to_pil(image)
 
+        #--------------------------Noa adeed 19.8.24 - START
+        # Plotting the loss vs iteration
+        plt.figure(figsize=(10, 6))
+        plt.plot(loss_values, label='Training Loss')
+        plt.xlabel('Iteration')
+        plt.ylabel('Loss')
+        plt.title('Loss vs. Iteration')
+        plt.legend()
+        plt.grid(True)
+
+        # Save the plot as an image file
+        plt.savefig('loss_vs_iteration.png')
+    
+        #--------------------------Noa added 19.8.24 - END
+
         if not return_dict:
             return (image, has_nsfw_concept)
-
+        
         return StableDiffusionPipelineOutput(images=image, nsfw_content_detected=has_nsfw_concept)
