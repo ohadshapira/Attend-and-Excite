@@ -370,7 +370,8 @@ class AttendAndExcitePipeline(StableDiffusionPipeline):
             losses.append(l2_distance)
 
         # Combine losses
-        object_count_loss = max(losses) if losses else torch.tensor(0.0, dtype=torch.float32)
+        #object_count_loss = max(losses) if losses else torch.tensor(0.0, dtype=torch.float32)
+        object_count_loss = self._compute_loss_make_it_count_project2(prompt_num_object_main, detector_num_object_main) #Noa added 19.8.24
         tv_loss = self.total_variation_loss(latents)
         total_loss = object_count_loss + tv_weight * tv_loss
 
