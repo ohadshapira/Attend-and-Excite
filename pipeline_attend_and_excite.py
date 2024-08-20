@@ -30,7 +30,7 @@ from diffusers import LCMScheduler, AutoPipelineForText2Image #noa added 14.08.2
 
 from utils_project.gaussian_smoothing import GaussianSmoothing #noa update name of utils dir to utils_project, 15.8.24
 from utils_project.ptp_utils import AttentionStore, aggregate_attention #noa update name of utils dir to utils_project, 15.8.24
-
+from schedulers.lcm_single_step_scheduler import LCMSingleStepScheduler #noa added 20.8.24 - for LCM
 
 #--------------------------Ohad added 15.8.24 - prompt to dict - start
 import nltk
@@ -416,6 +416,42 @@ class AttendAndExcitePipeline(StableDiffusionPipeline):
 
     #noa added 18.8.24 -------------------------------------------------------------------------------------------------------------------------------------------------------END 
 
+    #noa added 20.8.24 -------------------------------------------------------------------------------------------------------------------------------------------------------START
+    def total_variation_loss(self, latents: torch.Tensor) -> torch.Tensor:
+        """Computes the Total Variation Loss for the latents to enforce smoothness."""
+        tv_loss = torch.sum(torch.abs(latents[:, :, 1:] - latents[:, :, :-1])) + torch.sum(torch.abs(latents[:, 1:, :] - latents[:, :-1, :]))
+        return tv_loss
+
+    def compute_loss_new(self, latents: torch.Tensor, prompt_counts: Dict[str, int], detected_counts: Dict[str, int], eta: float = 0.1):
+        """
+        Computes the total loss which includes object count discrepancy and total variation loss.
+        
+        Args:
+        - latents (torch.Tensor): The current latent variables.
+        - prompt_counts (Dict[str, int]): Object counts as specified in the prompt.
+        - detected_counts (Dict[str, int]): Object counts detected in the generated image.
+        - eta (float): Weighting factor for the total variation loss.
+        
+        Returns:
+        - loss (torch.Tensor): The computed loss tensor.
+        """
+        # Object count discrepancy loss
+        l2_loss = torch.tensor(0.0, requires_grad=True, device=latents.device)
+        for obj, count_prompt in prompt_counts.items():
+            count_detected = detected_counts.get(obj, 0)
+            l2_loss = l2_loss + (count_prompt - count_detected) ** 2  # Avoid in-place operation
+
+
+        # Total variation loss for the latents
+        tv_loss = self.total_variation_loss(latents)
+        
+        # Combine losses
+        total_loss = l2_loss + eta * tv_loss
+        
+        return total_loss
+    
+    #noa added 20.8.24 -------------------------------------------------------------------------------------------------------------------------------------------------------END
+
     #noa added 15.8.24 -------------------------------------------------------------------------------------------------------------------------------------------------------START            
     def _compute_loss_make_it_count_project(self, prompt_num_object_main: Dict[str, int], detector_num_object_main: Dict[str, int], return_losses: bool = False) -> torch.Tensor:
         """ Computes the make-it-count-project loss using the maximum L2 distance for each token.  """
@@ -522,8 +558,8 @@ class AttendAndExcitePipeline(StableDiffusionPipeline):
 
             loss, losses = self._compute_loss(max_attention_per_index, return_losses=True)
 
-            if loss != 0:
-                latents = self._update_latent(latents, loss, step_size)
+            # if loss != 0:
+            #     latents = self._update_latent(latents, loss, step_size)
 
             with torch.no_grad():
                 noise_pred_uncond = self.unet(latents, t, encoder_hidden_states=text_embeddings[0].unsqueeze(0)).sample
@@ -723,17 +759,20 @@ class AttendAndExcitePipeline(StableDiffusionPipeline):
             max_iter_to_alter = len(self.scheduler.timesteps) + 1
 
         #--------------------------noa added 14-15.8.24 - LCM model - start
-        # Load the LCM model
-        model_lcm_id = "Lykon/dreamshaper-7"
-        adapter_lcm_id = "latent-consistency/lcm-lora-sdv1-5"
+        pipe_line_type = 'old'
+            
+        if pipe_line_type != "old":
+            # Load the LCM model
+            model_lcm_id = "Lykon/dreamshaper-7"
+            adapter_lcm_id = "latent-consistency/lcm-lora-sdv1-5"
 
-        pipe_lcm = AutoPipelineForText2Image.from_pretrained(model_lcm_id, torch_dtype=torch.float16, variant="fp16", safety_checker = None, requires_safety_checker = False)
-        pipe_lcm.scheduler = LCMScheduler.from_config(pipe_lcm.scheduler.config)
-        pipe_lcm.to("cuda") # Use GPU for faster generation
+            pipe_lcm = AutoPipelineForText2Image.from_pretrained(model_lcm_id, torch_dtype=torch.float16, variant="fp16", safety_checker = None, requires_safety_checker = False)
+            pipe_lcm.scheduler = LCMScheduler.from_config(pipe_lcm.scheduler.config)
+            pipe_lcm.to("cuda") # Use GPU for faster generation
 
-        # load and fuse lcm lora
-        pipe_lcm.load_lora_weights(adapter_lcm_id)
-        pipe_lcm.fuse_lora()
+            # load and fuse lcm lora
+            pipe_lcm.load_lora_weights(adapter_lcm_id)
+            pipe_lcm.fuse_lora()
 
         # Load YOLO model (using a pre-trained model, e.g., YOLOv5)
         model_yolo = torch.hub.load('ultralytics/yolov5', 'yolov5s') #noa added 15.8.24
@@ -744,8 +783,39 @@ class AttendAndExcitePipeline(StableDiffusionPipeline):
         # Initialize a list to store loss values - noa added 19.8.24
         loss_values = []
 
-        pipe_line_type = 'new'
+        #for LCM model - hyperparameters
+        inf_steps = 3 #noa added 20.8.24
+        guid_scale = 6 #noa added 20.8.24
         #-------------------------noa added 14-15.8.24 - end
+
+        #-----------------------------noa added 20.8.24 - LCM fro lookahead - START
+        #from accelerate import Accelerator
+
+        # Step 1: Initialize the pipeline with the stable-diffusion-v1-5 model
+        pipe = DiffusionPipeline.from_pretrained("runwayml/stable-diffusion-v1-5", variant=None)
+
+        # Step 2: Load LCM LoRA weights into the pipeline
+        pipe.load_lora_weights("latent-consistency/lcm-lora-sdv1-5")
+        pipe.fuse_lora()
+
+        # Step 3: Use the U-Net from the stable-diffusion-v1-5 model
+        lcm_unet = pipe.unet
+        # lcm_unet.load_state_dict(pipe.unet.state_dict())
+
+        # Step 4: Initialize the LCM-specific scheduler
+        lcm_scheduler = LCMSingleStepScheduler.from_config(pipe.scheduler.config)
+
+        # Step 5: Replace VAE with the one needed for LCM
+        vae_for_lcm = pipe.vae  # Update this to match your specific VAE
+
+        # Step 6: Ensure that the U-Net and other components are on the correct device
+        #accelerator = Accelerator()
+        lcm_unet.to("cuda") #(Accelerator.device)  # Ensure that the U-Net is on the right device
+        vae_for_lcm.to("cuda") #(accelerator.device)  # Make sure the VAE is also on the correct device
+
+        lcm_unet.requires_grad_(False)
+        vae_for_lcm.requires_grad_(False)
+        #-----------------------------noa added 20.8.24 - LCM fro lookahead - START
 
         # 7. Denoising loop
         num_warmup_steps = len(timesteps) - num_inference_steps * self.scheduler.order
@@ -762,16 +832,40 @@ class AttendAndExcitePipeline(StableDiffusionPipeline):
                     self.unet.zero_grad()
 
                     #---------------------------------------------------------------------------------------------noa added 14.8.24 - for LCM model - start 
-                    if pipe_line_type == 'old': #if running old pipeline simulatnusly...             
-                        # Generate the image using the pipeline and latent variables
-                        image_lcm = pipe_lcm(
-                            prompt=prompt,
-                            #prompt_embeds=prompt_embeds,
-                            num_inference_steps=8,
-                            generator=generator,
-                            guidance_scale=2.0,
-                            latent_vars=latents  # Pass the latent variables here
-                        ).images[0]
+                    if pipe_line_type == 'old': #if running old pipeline simulatnusly...  
+                        if False:           
+                            # Generate the image using the pipeline and latent variables
+                            image_lcm = pipe_lcm(
+                                prompt=prompt,
+                                #prompt_embeds=prompt_embeds,
+                                num_inference_steps=inf_steps,
+                                generator=generator,
+                                guidance_scale=guid_scale,
+                                latent_vars=latents  # Pass the latent variables here
+                            ).images[0]
+                                                # Change the scale
+
+                        pipe.unfuse_lora()
+                        pipe.load_lora_weights("latent-consistency/lcm-lora-sdv1-5")
+                        lcm_sample_full_lcm_prob = 0.5
+                        if np.random.rand() < lcm_sample_full_lcm_prob:
+                            new_lora_scale = 1.0
+                        else:
+                            new_lora_scale = np.random.uniform(0.4, 1.0)
+                        new_lora_scale = 1.0
+                        pipe.fuse_lora(lora_scale=new_lora_scale)
+                        lcm_unet.load_state_dict(pipe.unet.state_dict())
+
+                        noise_pred = lcm_unet(
+                            latents,
+                            t, 
+                            prompt_embeds
+                        ).sample
+
+                        image_lcm = vae_for_lcm.decode(latents).sample
+                        # Convert image to PIL format for display or saving
+                        image_lcm = pipe.numpy_to_pil(image_lcm)[0]
+
                         # save the generated image
                         try:
                             Path.mkdir(f'./outputs/{prompt}')
@@ -786,6 +880,7 @@ class AttendAndExcitePipeline(StableDiffusionPipeline):
                         # Perform object detection on the generated image
                         results_yolo = model_yolo(image_lcm_np)#noa added 15.8.24
                         print(f'results_yolo in iter {i} are: {results_yolo}')#noa added 15.8.24
+                        #print(f"the shape of results_yolo in iter {i} are: {results_yolo.shape}")
 
                         detector_num_object = self.object_dict_from_dtector(results_yolo) #noa added 15.8.24 - dict of detector  
                         print(f'detector_num_object is: {detector_num_object}')
@@ -837,9 +932,9 @@ class AttendAndExcitePipeline(StableDiffusionPipeline):
                             if i < max_iter_to_alter:
                                 loss = self._compute_loss(max_attention_per_index=max_attention_per_index)
                                 # loss = self._compute_loss_make_it_count_project(prompt_num_object_main=prompt_num_object, detector_num_object_main=detector_num_object) #- noa added 15.8.24 (use Ohad's functions output)
-                                if loss != 0:
-                                    latents = self._update_latent(latents=latents, loss=loss,
-                                                                step_size=scale_factor * np.sqrt(scale_range[i]))
+                                # if loss != 0:
+                                #     latents = self._update_latent(latents=latents, loss=loss,
+                                #                                 step_size=scale_factor * np.sqrt(scale_range[i]))
                                 print(f'Iteration {i} | Loss: {loss:0.4f}')
 
                     else: #noa added 18.8.24 - for our pipeline
@@ -848,9 +943,9 @@ class AttendAndExcitePipeline(StableDiffusionPipeline):
                         image_lcm = pipe_lcm(
                             prompt=prompt,
                             #prompt_embeds=prompt_embeds,
-                            num_inference_steps=8,
+                            num_inference_steps=inf_steps,
                             generator=generator,
-                            guidance_scale=3.0,
+                            guidance_scale=guid_scale,
                             latent_vars=latents  # Pass the latent variables here
                         ).images[0]
                         # save the generated image
@@ -873,24 +968,18 @@ class AttendAndExcitePipeline(StableDiffusionPipeline):
 
                         #prompt_num_object=self.count_objects_by_indices(prompt,object_indices=indices_to_alter) # ohad added 17.8
                         print(f'prompt_num_object is: {prompt_num_object}')
-
-                        #loss_lcm = self._compute_loss_make_it_count_project2(prompt_num_object_main=prompt_num_object, detector_num_object_main=detector_num_object) # noa added 15.8.24 (use Ohad's functions output)
-                        #print(f'loss_lcm in iter {i} are: {loss_lcm}')#noa added 15.8.24      
-                        
-                        #loss = self._compute_loss_make_it_count_project2(prompt_num_object_main=prompt_num_object, detector_num_object_main=detector_num_object)# noa added 15.8.24 (use Ohad's functions output)
-                        #print(f'loss_lcm in iter {i} are: {loss}')#noa added 15.8.24 
                          
                         loss = self._compute_loss_with_tv(prompt_num_object_main=prompt_num_object, detector_num_object_main= detector_num_object, latents=latents)  #noad added 18.8.24
-                        #print(f'loss in iter {i} are: {loss}')#noa added 15.8.24  
-                            
-                        # Store the scalar value of the loss
+                        print(f'loss in iter {i} are: {loss}')#noa added 20.8.24  
+
+                        # Store the scalar value of the loss - for plot of loss vs iterations
                         loss_values.append(loss.item())  #noa added 19.8.24
                         
                         #Perform gradient update - Noa added 15.8.24 - Start
                         latents = self._update_latent(latents=latents, loss=loss,
                                                    step_size=scale_factor * np.sqrt(scale_range[i]))
                         print('latents were updated using lcm loss')
-                        print(f'Iteration {i} | Loss: {loss:0.4f}')                                                                                                                                         
+                        print(f'Iteration {i} | Loss: {loss:0.4f}')                                                                                                                            
                         #----------------------------------------------------------------------------------------------noa added 14.8.24 - for LCM model - end
 
                 # expand the latents if we are doing classifier free guidance
