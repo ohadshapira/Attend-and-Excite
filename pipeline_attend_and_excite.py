@@ -3,6 +3,7 @@ import inspect
 from typing import Any, Callable, Dict, List, Optional, Union, Tuple
 
 import numpy as np
+import os
 import torch
 from torch.nn import functional as F
 from pathlib import Path
@@ -759,8 +760,15 @@ class AttendAndExcitePipeline(StableDiffusionPipeline):
             max_iter_to_alter = len(self.scheduler.timesteps) + 1
 
         #--------------------------noa added 14-15.8.24 - LCM model - start
-        pipe_line_type = 'old'
-            
+        pipe_line_type = 'new'
+        try:
+            newpath = './outputs/{prompt}'.format(prompt=prompt)
+            if not os.path.exists(newpath):
+                os.makedirs(newpath)
+            # Path.mkdir('./outputs/{prompt}'.format(prompt=prompt))
+        except Exception as e:
+            print(e)
+            pass
         if pipe_line_type != "old":
             # Load the LCM model
             model_lcm_id = "Lykon/dreamshaper-7"
@@ -788,11 +796,14 @@ class AttendAndExcitePipeline(StableDiffusionPipeline):
         guid_scale = 6 #noa added 20.8.24
         #-------------------------noa added 14-15.8.24 - end
 
-        #-----------------------------noa added 20.8.24 - LCM fro lookahead - START
-        #from accelerate import Accelerator
+        # #-----------------------------noa added 20.8.24 - LCM fro lookahead - START
+        # # #from accelerate import Accelerator
 
-        # Step 1: Initialize the pipeline with the stable-diffusion-v1-5 model
-        pipe = DiffusionPipeline.from_pretrained("runwayml/stable-diffusion-v1-5", variant=None)
+        # Step 1: Initialize the pipeline with the stable-diffusion-v1-4 model
+        pipe = StableDiffusionPipeline.from_pretrained(
+            "CompVis/stable-diffusion-v1-4",
+            torch_dtype=torch.float16
+        )
 
         # Step 2: Load LCM LoRA weights into the pipeline
         pipe.load_lora_weights("latent-consistency/lcm-lora-sdv1-5")
@@ -816,6 +827,29 @@ class AttendAndExcitePipeline(StableDiffusionPipeline):
         lcm_unet.requires_grad_(False)
         vae_for_lcm.requires_grad_(False)
         #-----------------------------noa added 20.8.24 - LCM fro lookahead - START
+
+        #-----------------------------ohad added 10.9.24 - START
+        # pipe = DiffusionPipeline.from_pretrained(
+        #     "stabilityai/stable-diffusion-xl-base-1.0",
+        #     variant="fp16",
+        #     torch_dtype=torch.float16
+        # ).to("cuda")
+
+        # # set scheduler
+        # pipe.scheduler = LCMScheduler.from_config(pipe.scheduler.config)
+
+        # # load LCM-LoRA
+        # pipe.load_lora_weights("latent-consistency/lcm-lora-sdxl")
+
+        # prompt = "Self-portrait oil painting, a beautiful cyborg with golden hair, 8k"
+
+        # generator = torch.manual_seed(42)
+        # image = pipe(
+        #     prompt=prompt, num_inference_steps=4, generator=generator, guidance_scale=1.0
+        # ).images[0]
+
+
+        #-----------------------------ohad added 10.9.24 - END
 
         # 7. Denoising loop
         num_warmup_steps = len(timesteps) - num_inference_steps * self.scheduler.order
@@ -845,54 +879,54 @@ class AttendAndExcitePipeline(StableDiffusionPipeline):
                             ).images[0]
                                                 # Change the scale
 
-                        pipe.unfuse_lora()
-                        pipe.load_lora_weights("latent-consistency/lcm-lora-sdv1-5")
-                        lcm_sample_full_lcm_prob = 0.5
-                        if np.random.rand() < lcm_sample_full_lcm_prob:
-                            new_lora_scale = 1.0
-                        else:
-                            new_lora_scale = np.random.uniform(0.4, 1.0)
-                        new_lora_scale = 1.0
-                        pipe.fuse_lora(lora_scale=new_lora_scale)
-                        lcm_unet.load_state_dict(pipe.unet.state_dict())
+                        # pipe.unfuse_lora()
+                        # pipe.load_lora_weights("latent-consistency/lcm-lora-sdv1-5")
+                        # lcm_sample_full_lcm_prob = 0.5
+                        # if np.random.rand() < lcm_sample_full_lcm_prob:
+                        #     new_lora_scale = 1.0
+                        # else:
+                        #     new_lora_scale = np.random.uniform(0.4, 1.0)
+                        # new_lora_scale = 1.0
+                        # pipe.fuse_lora(lora_scale=new_lora_scale)
+                        # lcm_unet.load_state_dict(pipe.unet.state_dict())
 
-                        noise_pred = lcm_unet(
-                            latents,
-                            t, 
-                            prompt_embeds
-                        ).sample
+                        # # noise_pred = lcm_unet(
+                        # #     latents,
+                        # #     t, 
+                        # #     prompt_embeds
+                        # # ).sample
 
-                        image_lcm = vae_for_lcm.decode(latents).sample
-                        # Convert image to PIL format for display or saving
-                        image_lcm = pipe.numpy_to_pil(image_lcm)[0]
+                        # image_lcm = vae_for_lcm.decode(latents).sample
+                        # # Convert image to PIL format for display or saving
+                        # image_lcm = pipe.numpy_to_pil(image_lcm)[0]
 
-                        # save the generated image
-                        try:
-                            Path.mkdir(f'./outputs/{prompt}')
-                        except Exception as e:
-                            print(e)
-                            pass
-                        #image_lcm.save(f'./outputs/{prompt}/lcm_denoise_step_{i}.png')
-                        image_lcm.save(f'./outputs/lcm_denoise_step_{i}.png')
+                        # # save the generated image
+                        # try:
+                        #     Path.mkdir(f'./outputs/{prompt}')
+                        # except Exception as e:
+                        #     print(e)
+                        #     pass
+                        # #image_lcm.save(f'./outputs/{prompt}/lcm_denoise_step_{i}.png')
+                        # image_lcm.save(f'./outputs/lcm_denoise_step_{i}.png')
 
-                        # Convert the PIL image to a format suitable for YOLO (numpy array)
-                        image_lcm_np = np.array(image_lcm) #noa added 15.8.24
-                        # Perform object detection on the generated image
-                        results_yolo = model_yolo(image_lcm_np)#noa added 15.8.24
-                        print(f'results_yolo in iter {i} are: {results_yolo}')#noa added 15.8.24
-                        #print(f"the shape of results_yolo in iter {i} are: {results_yolo.shape}")
+                        # # Convert the PIL image to a format suitable for YOLO (numpy array)
+                        # image_lcm_np = np.array(image_lcm) #noa added 15.8.24
+                        # # Perform object detection on the generated image
+                        # results_yolo = model_yolo(image_lcm_np)#noa added 15.8.24
+                        # print(f'results_yolo in iter {i} are: {results_yolo}')#noa added 15.8.24
+                        # #print(f"the shape of results_yolo in iter {i} are: {results_yolo.shape}")
 
-                        detector_num_object = self.object_dict_from_dtector(results_yolo) #noa added 15.8.24 - dict of detector  
-                        print(f'detector_num_object is: {detector_num_object}')
+                        # detector_num_object = self.object_dict_from_dtector(results_yolo) #noa added 15.8.24 - dict of detector  
+                        # print(f'detector_num_object is: {detector_num_object}')
 
-                        prompt_num_object=self.count_objects_by_indices(prompt,object_indices=indices_to_alter) # ohad added 17.8
-                        print(f'prompt_num_object is: {prompt_num_object}')
+                        # prompt_num_object=self.count_objects_by_indices(prompt,object_indices=indices_to_alter) # ohad added 17.8
+                        # print(f'prompt_num_object is: {prompt_num_object}')
 
-                        loss_lcm = self._compute_loss_make_it_count_project2(prompt_num_object_main=prompt_num_object, detector_num_object_main=detector_num_object) # noa added 15.8.24 (use Ohad's functions output)
-                        print(f'loss_lcm in iter {i} are: {loss_lcm}')#noa added 15.8.24          
+                        # loss_lcm = self._compute_loss_make_it_count_project2(prompt_num_object_main=prompt_num_object, detector_num_object_main=detector_num_object) # noa added 15.8.24 (use Ohad's functions output)
+                        # print(f'loss_lcm in iter {i} are: {loss_lcm}')#noa added 15.8.24          
 
-                        loss_lcm2 = self._compute_loss_with_tv(prompt_num_object_main=prompt_num_object, detector_num_object_main= detector_num_object, latents=latents)  
-                        print(f'loss_lcm2 in iter {i} are: {loss_lcm2}')#noa added 15.8.24                                                                                                                         
+                        # loss_lcm2 = self._compute_loss_with_tv(prompt_num_object_main=prompt_num_object, detector_num_object_main= detector_num_object, latents=latents)  
+                        # print(f'loss_lcm2 in iter {i} are: {loss_lcm2}')#noa added 15.8.24                                                                                                                         
                         #----------------------------------------------------------------------------------------------noa added 14.8.24 - for LCM model - end
 
                         # Get max activation value for each subject token
@@ -937,50 +971,51 @@ class AttendAndExcitePipeline(StableDiffusionPipeline):
                                 #                                 step_size=scale_factor * np.sqrt(scale_range[i]))
                                 print(f'Iteration {i} | Loss: {loss:0.4f}')
 
-                    else: #noa added 18.8.24 - for our pipeline
-                    #---------------------------------------------------------------------------------------------noa added 14.8.24 - for LCM model - start               
-                        # Generate the image using the pipeline and latent variables
-                        image_lcm = pipe_lcm(
-                            prompt=prompt,
-                            #prompt_embeds=prompt_embeds,
-                            num_inference_steps=inf_steps,
-                            generator=generator,
-                            guidance_scale=guid_scale,
-                            latent_vars=latents  # Pass the latent variables here
-                        ).images[0]
-                        # save the generated image
-                        try:
-                            Path.mkdir(f'./outputs/{prompt}')
-                        except Exception as e:
-                            print(e)
-                            pass
-                        #image_lcm.save(f'./outputs/{prompt}/lcm_denoise_step_{i}.png')
-                        image_lcm.save(f'./outputs/lcm_denoise_step_{i}.png')
+                    else: #noa added 18.8.24 - for our pipeline ### ohad put it on comment
+                        if False:
+                        #---------------------------------------------------------------------------------------------noa added 14.8.24 - for LCM model - start               
+                            # Generate the image using the pipeline and latent variables
+                            image_lcm = pipe_lcm(
+                                prompt=prompt,
+                                #prompt_embeds=prompt_embeds,
+                                num_inference_steps=inf_steps,
+                                generator=generator,
+                                guidance_scale=guid_scale,
+                                latent_vars=latents  # Pass the latent variables here
+                            ).images[0]
+                            # save the generated image
+                            try:
+                                Path.mkdir(f'./outputs/{prompt}')
+                            except Exception as e:
+                                print(e)
+                                pass
+                            #image_lcm.save(f'./outputs/{prompt}/lcm_denoise_step_{i}.png')
+                            image_lcm.save(f'./outputs/{prompt}/lcm_denoise_step_{i}.png')
 
-                        # Convert the PIL image to a format suitable for YOLO (numpy array)
-                        image_lcm_np = np.array(image_lcm) #noa added 15.8.24
-                        # Perform object detection on the generated image
-                        results_yolo = model_yolo(image_lcm_np)#noa added 15.8.24
-                        print(f'results_yolo in iter {i} are: {results_yolo}')#noa added 15.8.24
+                            # Convert the PIL image to a format suitable for YOLO (numpy array)
+                            image_lcm_np = np.array(image_lcm) #noa added 15.8.24
+                            # Perform object detection on the generated image
+                            results_yolo = model_yolo(image_lcm_np)#noa added 15.8.24
+                            print(f'results_yolo in iter {i} are: {results_yolo}')#noa added 15.8.24
 
-                        detector_num_object = self.object_dict_from_dtector(results_yolo) #noa added 15.8.24 - dict of detector  
-                        print(f'detector_num_object is: {detector_num_object}')
+                            detector_num_object = self.object_dict_from_dtector(results_yolo) #noa added 15.8.24 - dict of detector  
+                            print(f'detector_num_object is: {detector_num_object}')
 
-                        #prompt_num_object=self.count_objects_by_indices(prompt,object_indices=indices_to_alter) # ohad added 17.8
-                        print(f'prompt_num_object is: {prompt_num_object}')
-                         
-                        loss = self._compute_loss_with_tv(prompt_num_object_main=prompt_num_object, detector_num_object_main= detector_num_object, latents=latents)  #noad added 18.8.24
-                        print(f'loss in iter {i} are: {loss}')#noa added 20.8.24  
+                            #prompt_num_object=self.count_objects_by_indices(prompt,object_indices=indices_to_alter) # ohad added 17.8
+                            print(f'prompt_num_object is: {prompt_num_object}')
+                            
+                            loss = self._compute_loss_with_tv(prompt_num_object_main=prompt_num_object, detector_num_object_main= detector_num_object, latents=latents)  #noad added 18.8.24
+                            print(f'loss in iter {i} are: {loss}')#noa added 20.8.24  
 
-                        # Store the scalar value of the loss - for plot of loss vs iterations
-                        loss_values.append(loss.item())  #noa added 19.8.24
-                        
-                        #Perform gradient update - Noa added 15.8.24 - Start
-                        latents = self._update_latent(latents=latents, loss=loss,
-                                                   step_size=scale_factor * np.sqrt(scale_range[i]))
-                        print('latents were updated using lcm loss')
-                        print(f'Iteration {i} | Loss: {loss:0.4f}')                                                                                                                            
-                        #----------------------------------------------------------------------------------------------noa added 14.8.24 - for LCM model - end
+                            # Store the scalar value of the loss - for plot of loss vs iterations
+                            loss_values.append(loss.item())  #noa added 19.8.24
+                            
+                            #Perform gradient update - Noa added 15.8.24 - Start
+                            latents = self._update_latent(latents=latents, loss=loss,
+                                                    step_size=scale_factor * np.sqrt(scale_range[i]))
+                            print('latents were updated using lcm loss')
+                            print(f'Iteration {i} | Loss: {loss:0.4f}')                                                                                                                            
+                            #----------------------------------------------------------------------------------------------noa added 14.8.24 - for LCM model - end
 
                 # expand the latents if we are doing classifier free guidance
                 latent_model_input = torch.cat([latents] * 2) if do_classifier_free_guidance else latents
@@ -1002,6 +1037,55 @@ class AttendAndExcitePipeline(StableDiffusionPipeline):
                 # compute the previous noisy sample x_t -> x_t-1
                 latents = self.scheduler.step(noise_pred, t, latents, **extra_step_kwargs).prev_sample #we should keep it (original)- noa 15.8.24
 
+                if pipe_line_type == 'new': #ohad added 10.9.24 - for our pipeline
+                    
+                    latents_x_t=torch.Tensor.cuda(latents)
+                    image_t = self.decode_latents(latents_x_t)
+                    # Generate the image using the pipeline and latent variables
+                    image_lcm = pipe_lcm(
+                        prompt=prompt,
+                        #prompt_embeds=prompt_embeds,
+                        image=image_t,
+                        num_inference_steps=inf_steps,
+                        generator=generator,
+                        guidance_scale=1,
+                        # latent_vars=latents  # Pass the latent variables here
+                    ).images[0]
+                    # save the generated image
+                    # try:
+                    #     Path.mkdir(f'./outputs/{prompt}')
+                    # except Exception as e:
+                    #     print(e)
+                    #     pass
+                    #image_lcm.save(f'./outputs/{prompt}/lcm_denoise_step_{i}.png')
+                    image_lcm.save(f'./outputs/{prompt}/lcm_denoise_step_{i}.png')
+
+                    # Convert the PIL image to a format suitable for YOLO (numpy array)
+                    image_lcm_np = np.array(image_lcm) 
+                    # Perform object detection on the generated image
+                    results_yolo = model_yolo(image_lcm_np)
+                    print(f'results_yolo in iter {i} are: {results_yolo}')
+
+                    detector_num_object = self.object_dict_from_dtector(results_yolo) #noa added 15.8.24 - dict of detector  
+                    print(f'detector_num_object is: {detector_num_object}')
+
+                    #prompt_num_object=self.count_objects_by_indices(prompt,object_indices=indices_to_alter) # ohad added 17.8
+                    print(f'prompt_num_object is: {prompt_num_object}')
+                    
+                    loss = self._compute_loss_with_tv(prompt_num_object_main=prompt_num_object, detector_num_object_main= detector_num_object, latents=latents)  #noad added 18.8.24
+                    print(f'loss in iter {i} are: {loss}')#noa added 20.8.24  
+
+                    # Store the scalar value of the loss - for plot of loss vs iterations
+                    loss_values.append(loss.item())  #noa added 19.8.24
+                    
+                    #Perform gradient update - Noa added 15.8.24 - Start
+                    # latents = self._update_latent(latents=latents, loss=loss,
+                    #                         step_size=scale_factor * np.sqrt(scale_range[i]))
+                    # print('latents were updated using lcm loss')
+                    # print(f'Iteration {i} | Loss: {loss:0.4f}') 
+
+
+
                 # call the callback, if provided #we should keep it (original)- noa 15.8.24
                 if i == len(timesteps) - 1 or ((i + 1) > num_warmup_steps and (i + 1) % self.scheduler.order == 0):
                     progress_bar.update()
@@ -1012,7 +1096,8 @@ class AttendAndExcitePipeline(StableDiffusionPipeline):
         image = self.decode_latents(latents) #we should keep it (original)- noa 15.8.24
 
         # 9. Run safety checker
-        image, has_nsfw_concept = self.run_safety_checker(image, device, prompt_embeds.dtype) #think if we should keep it? - noa 15.8.24
+        image, has_nsfw_concept = self.run_safety_checker(image, device, prompt_embeds.dtype) # ohad disabled it
+        # has_nsfw_concept=False
 
         # 10. Convert to PIL #we should keep it (original)- noa 15.8.24 
         if output_type == "pil":
