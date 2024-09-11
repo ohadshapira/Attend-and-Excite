@@ -15,7 +15,7 @@ from diffusers.configuration_utils import FrozenDict
 from diffusers.models import AutoencoderKL, UNet2DConditionModel
 from diffusers.schedulers import KarrasDiffusionSchedulers
 #from diffusers.utils import deprecate, is_accelerate_available, logging, randn_tensor, replace_example_docstring
-from diffusers.utils import deprecate, is_accelerate_available, logging, replace_example_docstring
+from diffusers.utils import deprecate, is_accelerate_available, logging, replace_example_docstring, load_image
 from diffusers.utils.torch_utils import randn_tensor #noa added 14.8.24
 
 from diffusers.pipelines.pipeline_utils import DiffusionPipeline
@@ -1041,6 +1041,14 @@ class AttendAndExcitePipeline(StableDiffusionPipeline):
                     
                     latents_x_t=torch.Tensor.cuda(latents)
                     image_t = self.decode_latents(latents_x_t)
+
+                    use_reference_image=True
+                    if use_reference_image:
+                        from PIL import Image
+
+                        image_t_path=f'./outputs/{prompt}/{prompt}_reference.png'
+                        image_t = Image.open(image_t_path)
+
                     # Generate the image using the pipeline and latent variables
                     image_lcm = pipe_lcm(
                         prompt=prompt,
@@ -1049,6 +1057,7 @@ class AttendAndExcitePipeline(StableDiffusionPipeline):
                         num_inference_steps=inf_steps,
                         generator=generator,
                         guidance_scale=1,
+                        strength=0.6,
                         # latent_vars=latents  # Pass the latent variables here
                     ).images[0]
                     # save the generated image
