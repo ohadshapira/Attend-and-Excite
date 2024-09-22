@@ -5,6 +5,9 @@ from typing import Any, Callable, Dict, List, Optional, Union, Tuple
 import numpy as np
 import os
 import torch
+torch.cuda.empty_cache()
+import torch.optim as optim
+
 from torch.nn import functional as F
 from pathlib import Path
 
@@ -24,7 +27,7 @@ from diffusers.pipelines.stable_diffusion.safety_checker import StableDiffusionS
 
 from diffusers.pipelines.stable_diffusion import StableDiffusionPipeline
 
-from diffusers import LCMScheduler, AutoPipelineForText2Image #noa added 14.08.24
+from diffusers import LCMScheduler, AutoPipelineForText2Image, AutoPipelineForImage2Image #noa added 14.08.24
 #import matplotlib.pyplot as plt #noa added 14.08.24
 #from transformers import AutoTokenizer #noa added 14.08.24
 #from diffusers import PNDMScheduler #noa added 14.08.24
@@ -513,7 +516,8 @@ class AttendAndExcitePipeline(StableDiffusionPipeline):
     @staticmethod
     def _update_latent(latents: torch.Tensor, loss: torch.Tensor, step_size: float) -> torch.Tensor: #we should keep it (original)- noa 15.8.24
         """ Update the latent according to the computed loss. """
-        grad_cond = torch.autograd.grad(loss.requires_grad_(True), [latents], retain_graph=True)[0]
+        # grad_cond = torch.autograd.grad(loss, [latents,loss], retain_graph=True,allow_unused=True)[0] # ohad added : allow_unused=True
+        grad_cond = torch.autograd.grad(loss.requires_grad_(True), [latents], retain_graph=True)[0] # original
         latents = latents - step_size * grad_cond
         return latents
 
@@ -599,7 +603,7 @@ class AttendAndExcitePipeline(StableDiffusionPipeline):
         print(f"\t Finished with loss of: {loss}")
         return loss, latents, max_attention_per_index
 
-    @torch.no_grad()
+    @torch.no_grad() # Ohad added back because torch.OutOfMemoryError: CUDA out of memory. Remove for optimizer
     def __call__(
             self,
             prompt: Union[str, List[str]],
@@ -765,6 +769,9 @@ class AttendAndExcitePipeline(StableDiffusionPipeline):
             newpath = './outputs/{prompt}'.format(prompt=prompt)
             if not os.path.exists(newpath):
                 os.makedirs(newpath)
+                os.makedirs(newpath+'/lcm_t2i')
+                os.makedirs(newpath+'/lcm_i2i')
+                os.makedirs(newpath+'/image_t')
             # Path.mkdir('./outputs/{prompt}'.format(prompt=prompt))
         except Exception as e:
             print(e)
@@ -781,6 +788,14 @@ class AttendAndExcitePipeline(StableDiffusionPipeline):
             # load and fuse lcm lora
             pipe_lcm.load_lora_weights(adapter_lcm_id)
             pipe_lcm.fuse_lora()
+            # pipe_lcm.requires_grad_(True)
+
+
+            pipe_lcm_p2p = AutoPipelineForImage2Image.from_pretrained("SimianLuo/LCM_Dreamshaper_v7")
+            # To save GPU memory, torch.float16 can be used, but it may compromise image quality.
+            pipe_lcm_p2p.to(torch_device="cuda", torch_dtype=torch.float32)
+
+
 
         # Load YOLO model (using a pre-trained model, e.g., YOLOv5)
         model_yolo = torch.hub.load('ultralytics/yolov5', 'yolov5s') #noa added 15.8.24
@@ -850,6 +865,9 @@ class AttendAndExcitePipeline(StableDiffusionPipeline):
 
 
         #-----------------------------ohad added 10.9.24 - END
+        # ohad - 15.9 - take 2
+        loss_fn = F.mse_loss
+        optimizer = optim.Adam([latents], lr=0.01)  # Optimize the latent_tensor
 
         # 7. Denoising loop
         num_warmup_steps = len(timesteps) - num_inference_steps * self.scheduler.order
@@ -864,6 +882,21 @@ class AttendAndExcitePipeline(StableDiffusionPipeline):
                     noise_pred_text = self.unet(latents, t,
                                                 encoder_hidden_states=prompt_embeds[1].unsqueeze(0), cross_attention_kwargs=cross_attention_kwargs).sample
                     self.unet.zero_grad()
+
+                    max_attention_per_index = self._aggregate_and_get_max_attention_per_token( #remove - we do not need in our project - noa - 15.8.24
+                        attention_store=attention_store,
+                        indices_to_alter=indices_to_alter,
+                        attention_res=attention_res,
+                        smooth_attentions=smooth_attentions,
+                        sigma=sigma,
+                        kernel_size=kernel_size,
+                        normalize_eot=sd_2_1)
+
+                    if not run_standard_sd: #I do not think we need that *if* - Noa 15.8.24 (it is if we want to run the stable diffusion without attend-and-excite changes)
+                        loss = self._compute_loss(max_attention_per_index=max_attention_per_index)
+                        # if loss != 0:
+                        #     latents = self._update_latent(latents=latents, loss=loss,
+                        #                                     step_size=scale_factor * np.sqrt(scale_range[i]))
 
                     #---------------------------------------------------------------------------------------------noa added 14.8.24 - for LCM model - start 
                     if pipe_line_type == 'old': #if running old pipeline simulatnusly...  
@@ -1041,33 +1074,50 @@ class AttendAndExcitePipeline(StableDiffusionPipeline):
                     
                     latents_x_t=torch.Tensor.cuda(latents)
                     image_t = self.decode_latents(latents_x_t)
+                    image_t_tensor = torch.from_numpy(image_t)
+                    # image_t_pil=self.numpy_to_pil(image_t)
+                    # image_t_pil[0].save(f'./outputs/{prompt}/image_t/step_{i}.png')
 
-                    use_reference_image=True
+                    use_reference_image=False
                     if use_reference_image:
                         from PIL import Image
 
-                        image_t_path=f'./outputs/{prompt}/{prompt}_reference.png'
-                        image_t = Image.open(image_t_path)
+                        image_ref_path=f'./outputs/{prompt}/{prompt}_reference.png'
+                        image_ref = Image.open(image_ref_path)
+
+                        import torchvision.transforms as transforms
+                        transform = transforms.ToTensor()
+                        image_ref = transform(image_ref)
+                        image_ref_per = image_ref.permute(1, 2, 0)  # Now shape is (512, 512, 3)
+                        image_ref_per = image_ref.unsqueeze(0)
 
                     # Generate the image using the pipeline and latent variables
                     image_lcm = pipe_lcm(
                         prompt=prompt,
                         #prompt_embeds=prompt_embeds,
-                        image=image_t,
+                        # image=image_t,
                         num_inference_steps=inf_steps,
                         generator=generator,
                         guidance_scale=1,
-                        strength=0.6,
-                        # latent_vars=latents  # Pass the latent variables here
+                        # strength=0.6,
+                        latent_vars=latents  # Pass the latent variables here
                     ).images[0]
-                    # save the generated image
-                    # try:
-                    #     Path.mkdir(f'./outputs/{prompt}')
-                    # except Exception as e:
-                    #     print(e)
-                    #     pass
-                    #image_lcm.save(f'./outputs/{prompt}/lcm_denoise_step_{i}.png')
-                    image_lcm.save(f'./outputs/{prompt}/lcm_denoise_step_{i}.png')
+                    image_lcm.save(f'./outputs/{prompt}/lcm_t2i/lcm_denoise_step_{i}.png')
+                    
+
+
+
+                    # Can be set to 1~50 steps. LCM support fast inference even <= 4 steps. Recommend: 1~8 steps.
+                    num_inference_steps = 4
+                    image_lcm_p2p = pipe_lcm_p2p(
+                        prompt=prompt, image=image_t, num_inference_steps=num_inference_steps, guidance_scale=1,strength=0.6,
+                    ).images[0]
+
+                    image_lcm_p2p.save(f'./outputs/{prompt}/lcm_i2i/lcm_denoise_step_{i}.png')
+
+
+
+                    
 
                     # Convert the PIL image to a format suitable for YOLO (numpy array)
                     image_lcm_np = np.array(image_lcm) 
@@ -1081,18 +1131,80 @@ class AttendAndExcitePipeline(StableDiffusionPipeline):
                     #prompt_num_object=self.count_objects_by_indices(prompt,object_indices=indices_to_alter) # ohad added 17.8
                     print(f'prompt_num_object is: {prompt_num_object}')
                     
-                    loss = self._compute_loss_with_tv(prompt_num_object_main=prompt_num_object, detector_num_object_main= detector_num_object, latents=latents)  #noad added 18.8.24
-                    print(f'loss in iter {i} are: {loss}')#noa added 20.8.24  
-
+                    ## ohad disabled 15.9
+                    # loss = self._compute_loss_with_tv(prompt_num_object_main=prompt_num_object, detector_num_object_main= detector_num_object, latents=latents)  #noad added 18.8.24
+                    # print(f'loss in iter {i} are: {loss}')#noa added 20.8.24  
+                    # loss_values.append(loss.item())  #noa added 19.8.24
                     # Store the scalar value of the loss - for plot of loss vs iterations
-                    loss_values.append(loss.item())  #noa added 19.8.24
+
                     
-                    #Perform gradient update - Noa added 15.8.24 - Start
+                    # ohad- 15.9 - start - take 2
+                    
+                    import torchvision.transforms as transforms
+                    transform = transforms.ToTensor()
+                    tensor_image = transform(image_lcm_p2p)
+                    tensor_image_permuted = tensor_image.permute(1, 2, 0)  # Now shape is (512, 512, 3)
+                    tensor_image_batched = tensor_image_permuted.unsqueeze(0)
+
+
+                    if use_reference_image:
+                        tensor_image=tensor_image.unsqueeze(0).to('cuda')
+                        tensor_image.requires_grad = True
+                        image_ref=image_ref.unsqueeze(0).to('cuda')
+
+                        
+                        optimizer.zero_grad()
+                        loss = F.mse_loss(tensor_image, image_ref)
+                        loss.requires_grad = True
+                        loss.backward()
+                        latents_copy=latents.detach().clone()
+                        optimizer.step()
+
+                        print(f'Step {i}, Loss: {loss.item()}')
+                        loss_values.append(loss.item())
+
+                        # latents = self._update_latent(latents=latents, loss=loss,
+                        #                         step_size=scale_factor * np.sqrt(scale_range[i]))
+                        # print('latents were updated using lcm loss')
+                        # print(f'Iteration {i} | Loss: {loss:0.4f}') 
+                    
+                    
+                    # ohad- 15.9 - start
+                    
+                    # criterion=torch.nn.MSELoss()
+                    # criterion.requires_grad = True
+                    # import torchvision.transforms as transforms
+                    # transform = transforms.ToTensor()
+                    # tensor_image = transform(image_lcm)
+                    # tensor_image_permuted = tensor_image.permute(1, 2, 0)  # Now shape is (512, 512, 3)
+                    # tensor_image_batched = tensor_image_permuted.unsqueeze(0)
+
+                    # assert image_t_tensor.shape == tensor_image_batched.shape, "Images must be the same size!"
+                    # loss = F.mse_loss(image_t_tensor, tensor_image_batched)
+                    
+
+                    # loss.requires_grad = True
+                    # loss.retain_grad()
+                    # loss.backward()
+
+
+                    # gradients = torch.autograd.grad(outputs=loss, inputs=image_t_tensor, create_graph=True,allow_unused=True)
+
+
+
+
+                    # loss=criterion(image_t_tensor ,tensor_image_batched)
+                    # loss.requires_grad = True
+                    
+                    # loss.backward()
+                    # # ohad- 15.9 - stop
+
+                    # loss_values.append(loss.item())  #noa added 19.8.24
+                    # #Perform gradient update - Noa added 15.8.24 - Start
                     # latents = self._update_latent(latents=latents, loss=loss,
                     #                         step_size=scale_factor * np.sqrt(scale_range[i]))
                     # print('latents were updated using lcm loss')
                     # print(f'Iteration {i} | Loss: {loss:0.4f}') 
-
 
 
                 # call the callback, if provided #we should keep it (original)- noa 15.8.24
@@ -1100,13 +1212,13 @@ class AttendAndExcitePipeline(StableDiffusionPipeline):
                     progress_bar.update()
                     if callback is not None and i % callback_steps == 0:
                         callback(i, t, latents)
-
+                
         # 8. Post-processing
         image = self.decode_latents(latents) #we should keep it (original)- noa 15.8.24
 
         # 9. Run safety checker
         image, has_nsfw_concept = self.run_safety_checker(image, device, prompt_embeds.dtype) # ohad disabled it
-        # has_nsfw_concept=False
+        has_nsfw_concept=[False]
 
         # 10. Convert to PIL #we should keep it (original)- noa 15.8.24 
         if output_type == "pil":
