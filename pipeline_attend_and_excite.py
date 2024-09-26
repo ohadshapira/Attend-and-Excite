@@ -603,7 +603,7 @@ class AttendAndExcitePipeline(StableDiffusionPipeline):
         print(f"\t Finished with loss of: {loss}")
         return loss, latents, max_attention_per_index
 
-    @torch.no_grad() # Ohad added back because torch.OutOfMemoryError: CUDA out of memory. Remove for optimizer
+    # @torch.no_grad() # Ohad added back because torch.OutOfMemoryError: CUDA out of memory. Remove for optimizer
     def __call__(
             self,
             prompt: Union[str, List[str]],
@@ -1082,7 +1082,8 @@ class AttendAndExcitePipeline(StableDiffusionPipeline):
                     if use_reference_image:
                         from PIL import Image
 
-                        image_ref_path=f'./outputs/{prompt}/{prompt}_reference.png'
+                        # set reference image number in denoising step
+                        image_ref_path=f'./outputs/{prompt}/lcm_t2i/lcm_denoise_step_29.png'
                         image_ref = Image.open(image_ref_path)
 
                         import torchvision.transforms as transforms
@@ -1105,8 +1106,6 @@ class AttendAndExcitePipeline(StableDiffusionPipeline):
                     image_lcm.save(f'./outputs/{prompt}/lcm_t2i/lcm_denoise_step_{i}.png')
                     
 
-
-
                     # Can be set to 1~50 steps. LCM support fast inference even <= 4 steps. Recommend: 1~8 steps.
                     num_inference_steps = 4
                     image_lcm_p2p = pipe_lcm_p2p(
@@ -1116,8 +1115,6 @@ class AttendAndExcitePipeline(StableDiffusionPipeline):
                     image_lcm_p2p.save(f'./outputs/{prompt}/lcm_i2i/lcm_denoise_step_{i}.png')
 
 
-
-                    
 
                     # Convert the PIL image to a format suitable for YOLO (numpy array)
                     image_lcm_np = np.array(image_lcm) 

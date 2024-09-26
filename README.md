@@ -47,7 +47,15 @@ Example generations outputted by Stable Diffusion with Attend-and-Excite.
 
 To generate an image, you can simply run the `run.py` script. For example,
 ```
-python run.py --prompt "a cat and a dog" --seeds [0] --token_indices [2,5]
+python run.py --prompt "4 bottles" --seeds [0] --token_indices [2]
+
+**Deep learning project - **
+under outputs/{prompt}/lcm_t2i/ folder you will get 'lcm_denoise_step_{i}.png' files
+Choose the one that you like the most and change lone 1081 flag named: 'use_reference_image' to True (use_reference_image=True).
+Modify line 1086 to the image you want to reference from (i.e j=40 --> image_ref_path=f'./outputs/{prompt}/lcm_t2i/lcm_denoise_step_40.png')
+
+Run same command again:
+python run.py --prompt "4 bottles" --seeds [0] --token_indices [2]
 ```
 Notes:
 
